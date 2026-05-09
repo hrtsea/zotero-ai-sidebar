@@ -1,0 +1,1650 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zotero AI Sidebar · 5-Minute Quick Start</title>
+<style>
+  :root {
+    --zai-bg: #fbfaf7;
+    --zai-panel: #fffdf8;
+    --zai-panel-strong: #ffffff;
+    --zai-border: #e7dfd2;
+    --zai-border-strong: #d8c9b6;
+    --zai-text: #24211d;
+    --zai-muted: #746b60;
+    --zai-faint: #9a9186;
+    --zai-accent: #c0673d;
+    --zai-accent-strong: #a94e25;
+    --zai-accent-soft: #fff0e7;
+    --zai-blue: #2d6f8f;
+    --zai-blue-soft: #e9f5f8;
+    --zai-green: #2f7d51;
+    --zai-red: #b34040;
+    --zai-shadow: 0 10px 28px rgba(56, 41, 24, 0.08);
+    --zai-font: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --zai-mono: "JetBrains Mono", "Fira Code", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--zai-bg);
+    color: var(--zai-text);
+    font-family: var(--zai-font);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 8% 4%, rgba(255, 238, 219, 0.9), transparent 34%),
+      linear-gradient(135deg, #f2ede5 0%, #fbfaf7 45%, #f6efe7 100%);
+    min-height: 100vh;
+  }
+
+  /* Language toggle ------------------------------------------------------- */
+  body.lang-zh .en,
+  body.lang-en .zh { display: none; }
+
+  /* Top bar --------------------------------------------------------------- */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 32px;
+    border-bottom: 1px solid var(--zai-border);
+    background: rgba(251, 250, 247, 0.94);
+    backdrop-filter: blur(10px);
+  }
+  .topbar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font: 700 14px/1 var(--zai-font);
+    color: var(--zai-accent-strong);
+  }
+  .topbar-brand .logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--zai-accent) 0%, var(--zai-accent-strong) 100%);
+    color: #fff;
+    font: 800 13px/1 var(--zai-mono);
+  }
+  .topbar-title {
+    flex: 1;
+    color: var(--zai-text);
+    font: 600 13px/1.4 var(--zai-font);
+  }
+  .topbar-title .sub {
+    color: var(--zai-muted);
+    font-weight: 400;
+    margin-left: 6px;
+  }
+  .topbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .lang-switch {
+    display: inline-flex;
+    border: 1px solid var(--zai-border);
+    border-radius: 999px;
+    padding: 2px;
+    background: var(--zai-panel-strong);
+  }
+  .lang-switch button {
+    border: 0;
+    background: transparent;
+    color: var(--zai-muted);
+    padding: 4px 12px;
+    border-radius: 999px;
+    font: 600 12px/1 var(--zai-font);
+    cursor: pointer;
+  }
+  body.lang-zh .lang-switch [data-lang="zh"],
+  body.lang-en .lang-switch [data-lang="en"] {
+    background: var(--zai-accent);
+    color: #fff;
+  }
+  .topbar-link {
+    color: var(--zai-blue);
+    text-decoration: none;
+    font: 600 12px/1 var(--zai-font);
+    border-bottom: 1px solid rgba(45, 111, 143, 0.28);
+    padding-bottom: 1px;
+  }
+
+  /* Page layout ---------------------------------------------------------- */
+  .page {
+    width: min(1480px, 100%);
+    margin: 0 auto;
+    padding: 32px 28px 72px;
+  }
+
+  /* Hero ------------------------------------------------------------------ */
+  .hero {
+    padding: 24px 0 32px;
+    border-bottom: 1px dashed var(--zai-border-strong);
+    margin-bottom: 36px;
+  }
+  .hero-eyebrow {
+    color: var(--zai-accent-strong);
+    font: 700 12px/1 var(--zai-mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .hero h1 {
+    margin: 8px 0 10px;
+    font: 800 28px/1.2 var(--zai-font);
+    letter-spacing: -0.03em;
+  }
+  .hero p {
+    max-width: 720px;
+    margin: 0;
+    color: var(--zai-muted);
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .hero-toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .hero-toc a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--zai-border);
+    border-radius: 999px;
+    background: var(--zai-panel-strong);
+    color: var(--zai-text);
+    font: 600 12px/1 var(--zai-font);
+    text-decoration: none;
+  }
+  .hero-toc a:hover {
+    border-color: var(--zai-accent);
+    background: var(--zai-accent-soft);
+    color: var(--zai-accent-strong);
+  }
+  .hero-toc a .num {
+    font: 800 10px/1 var(--zai-mono);
+    color: var(--zai-accent);
+  }
+
+  /* Step section --------------------------------------------------------- */
+  .step {
+    margin-bottom: 56px;
+  }
+  .step-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+  }
+  .step-title {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    color: #5b4634;
+    font: 800 13px/1 var(--zai-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .step-title .num {
+    color: var(--zai-red);
+    font-weight: 900;
+  }
+  .step-title .name {
+    color: #5b4634;
+    font: 800 17px/1.2 var(--zai-font);
+    letter-spacing: -0.02em;
+    text-transform: none;
+  }
+  .step-note {
+    color: var(--zai-muted);
+    font: 12px/1.5 var(--zai-font);
+    text-align: right;
+    max-width: 460px;
+  }
+  .mockup-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 18px;
+  }
+  .mockup-grid.two-col {
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  }
+  .mockup-grid.three-col {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+
+  /* Mockup card chrome --------------------------------------------------- */
+  .mock {
+    display: flex;
+    flex-direction: column;
+  }
+  .mock-caption {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 6px;
+    color: var(--zai-accent-strong);
+    font: 800 11px/1 var(--zai-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .mock-caption .name {
+    color: var(--zai-text);
+    font: 700 13px/1.2 var(--zai-font);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .mock-caption .hint {
+    margin-left: auto;
+    color: var(--zai-muted);
+    font: 11px/1.4 var(--zai-font);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .window {
+    overflow: hidden;
+    border: 1px solid rgba(154, 145, 134, 0.28);
+    border-radius: 18px;
+    background: rgba(255, 253, 248, 0.86);
+    box-shadow: 0 18px 44px rgba(56, 41, 24, 0.14);
+  }
+  .window-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 34px;
+    padding: 0 11px;
+    border-bottom: 1px solid var(--zai-border);
+    background: linear-gradient(180deg, #fffdf8, #f6efe7);
+    color: var(--zai-muted);
+    font-size: 12px;
+  }
+  .window-dots {
+    display: inline-flex;
+    gap: 6px;
+  }
+  .window-dots span {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: block;
+  }
+  .window-dots span:nth-child(1) { background: #ed6a5e; }
+  .window-dots span:nth-child(2) { background: #f5bf4f; }
+  .window-dots span:nth-child(3) { background: #61c454; }
+  .window-title {
+    color: var(--zai-muted);
+    font: 500 12px/1 var(--zai-font);
+    letter-spacing: 0.02em;
+  }
+  .window-body {
+    background: var(--zai-bg);
+    min-height: 320px;
+  }
+
+  /* Sidebar mockup primitives -------------------------------------------- */
+  .sb {
+    display: flex;
+    flex-direction: column;
+    background:
+      radial-gradient(circle at 12% 0%, #fff5eb 0, transparent 32%),
+      var(--zai-bg);
+    height: 100%;
+    min-height: 380px;
+    color: var(--zai-text);
+    font-size: 13px;
+  }
+  .sb-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px 0;
+    border-bottom: 1px solid var(--zai-border);
+    background: rgba(255, 253, 248, 0.6);
+  }
+  .sb-tab {
+    padding: 6px 12px;
+    border-radius: 8px 8px 0 0;
+    color: var(--zai-muted);
+    font: 600 12px/1 var(--zai-font);
+    cursor: default;
+  }
+  .sb-tab.is-active {
+    background: var(--zai-panel-strong);
+    color: var(--zai-accent-strong);
+    border: 1px solid var(--zai-border);
+    border-bottom-color: transparent;
+  }
+  .sb-itemhead {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--zai-border);
+    background: rgba(255, 253, 248, 0.84);
+  }
+  .sb-itemhead .title {
+    color: var(--zai-text);
+    font: 700 13px/1.3 var(--zai-font);
+  }
+  .sb-itemhead .meta {
+    margin-top: 2px;
+    color: var(--zai-muted);
+    font: 11px/1.4 var(--zai-mono);
+  }
+
+  /* Empty preset card */
+  .preset-empty-card {
+    margin: 14px 12px;
+    padding: 16px 14px;
+    border: 1px dashed var(--zai-border-strong);
+    border-radius: 12px;
+    background: var(--zai-panel-strong);
+    text-align: center;
+  }
+  .preset-empty-card .h {
+    color: var(--zai-text);
+    font: 700 13px/1.4 var(--zai-font);
+    margin-bottom: 4px;
+  }
+  .preset-empty-card .p {
+    color: var(--zai-muted);
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--zai-accent);
+    color: #fff;
+    font: 700 12px/1 var(--zai-font);
+    box-shadow: 0 5px 14px rgba(192, 103, 61, 0.26);
+    cursor: default;
+  }
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--zai-border);
+    background: var(--zai-panel-strong);
+    color: var(--zai-text);
+    font: 600 12px/1 var(--zai-font);
+    cursor: default;
+  }
+
+  /* Preset edit form */
+  .preset-edit {
+    margin: 12px;
+    padding: 14px;
+    border: 1px solid var(--zai-border-strong);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255, 253, 248, 0.97), rgba(255, 247, 238, 0.88));
+    box-shadow: 0 8px 22px rgba(88, 59, 31, 0.08);
+  }
+  .preset-edit h4 {
+    margin: 0 0 10px;
+    color: var(--zai-accent-strong);
+    font: 700 13px/1 var(--zai-font);
+  }
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .field label {
+    flex: 0 0 96px;
+    color: var(--zai-muted);
+    font: 12px/1 var(--zai-font);
+  }
+  .field .ctrl {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid var(--zai-border);
+    border-radius: 7px;
+    background: var(--zai-panel-strong);
+    color: var(--zai-text);
+    font: 12px/1.3 var(--zai-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .field .ctrl.is-select::after {
+    content: " ▾";
+    color: var(--zai-muted);
+  }
+  .preset-test-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .test-status {
+    font: 600 12px/1 var(--zai-font);
+  }
+  .test-status.ok { color: var(--zai-green); }
+  .test-status.fail { color: var(--zai-red); }
+
+  /* Quick prompts row */
+  .quick-prompts-mock {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 10px 10px 4px;
+  }
+  .quick-prompts-mock button {
+    flex: 1 1 0;
+    border: 1px solid var(--zai-border);
+    border-radius: 8px;
+    background: var(--zai-panel-strong);
+    color: var(--zai-text);
+    padding: 5px 8px;
+    font: 600 12px/1.2 var(--zai-font);
+    cursor: default;
+  }
+  .quick-prompts-mock .pill {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    color: var(--zai-muted);
+    font-weight: 700;
+  }
+  .quick-prompts-mock .pill.unread {
+    border-color: #e5a686;
+    background: var(--zai-accent-soft);
+    color: var(--zai-accent-strong);
+  }
+  .quick-prompts-mock .pill .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 17px;
+    height: 17px;
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--zai-accent);
+    color: #fff;
+    font: 800 10px/17px var(--zai-mono);
+  }
+
+  /* Composer */
+  .composer-mock {
+    margin: 6px 10px 10px;
+    border: 1px solid var(--zai-border-strong);
+    border-radius: 18px;
+    background: var(--zai-panel-strong);
+    box-shadow: var(--zai-shadow);
+    padding: 12px 14px 10px;
+    position: relative;
+  }
+  .composer-mock textarea,
+  .composer-mock .ta {
+    width: 100%;
+    min-height: 56px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--zai-text);
+    font: 13px/1.5 var(--zai-font);
+    resize: none;
+    outline: none;
+    white-space: pre-wrap;
+  }
+  .composer-mock .ta.is-placeholder { color: var(--zai-faint); }
+  .composer-mock .selection-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border: 1px solid #e5a686;
+    border-radius: 999px;
+    background: var(--zai-accent-soft);
+    color: var(--zai-accent-strong);
+    font: 700 11px/1.4 var(--zai-font);
+    margin-bottom: 8px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-mock .selection-chip .x {
+    color: var(--zai-muted);
+    margin-left: 2px;
+  }
+  .composer-footer-mock {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    color: var(--zai-muted);
+    font: 12px/1.4 var(--zai-font);
+  }
+  .composer-footer-mock .switch {
+    color: var(--zai-accent-strong);
+    font-weight: 600;
+  }
+  .composer-footer-mock .switch.blue {
+    color: var(--zai-blue);
+  }
+  .send-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 11px;
+    background: var(--zai-accent);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 5px 14px rgba(192, 103, 61, 0.26);
+    margin-left: auto;
+    font-size: 18px;
+  }
+  .send-btn.disabled {
+    background: #d8c9b6;
+    box-shadow: none;
+  }
+
+  /* Bubbles */
+  .messages-mock {
+    flex: 1;
+    padding: 14px 12px 10px;
+    overflow: hidden;
+  }
+  .bubble-user-mock {
+    width: fit-content;
+    max-width: 84%;
+    margin-left: auto;
+    margin-bottom: 12px;
+    padding: 9px 12px;
+    background: linear-gradient(135deg, #eaf5f9, #f8fbfc);
+    border: 1px solid #cde4ec;
+    border-radius: 12px;
+    box-shadow: 0 8px 20px rgba(45, 111, 143, 0.08);
+    font: 13px/1.55 var(--zai-font);
+  }
+  .bubble-assistant-mock {
+    margin-bottom: 12px;
+    padding: 0;
+  }
+  .bubble-head-mock {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .bubble-avatar-mock {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(116, 107, 96, 0.1);
+    color: var(--zai-muted);
+    font: 700 11px/22px var(--zai-font);
+    text-align: center;
+  }
+  .bubble-role-mock {
+    padding: 0 7px;
+    height: 18px;
+    line-height: 18px;
+    border-radius: 999px;
+    background: rgba(116, 107, 96, 0.1);
+    color: var(--zai-muted);
+    font: 700 9px/18px var(--zai-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .live-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid #c7dfe8;
+    border-radius: 999px;
+    background: var(--zai-blue-soft);
+    color: var(--zai-blue);
+    font: 700 11px/1 var(--zai-font);
+  }
+  .live-progress .dot {
+    width: 9px;
+    height: 9px;
+    border: 2px solid rgba(45, 111, 143, 0.22);
+    border-top-color: var(--zai-blue);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .live-progress .detail {
+    color: var(--zai-muted);
+    font-weight: 500;
+  }
+  .thinking-mock {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--zai-blue);
+    font: 700 11px/1.4 var(--zai-font);
+    margin: 4px 0 6px;
+    cursor: default;
+  }
+  .thinking-mock::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+  }
+  .tool-trace-mock {
+    margin: 4px 0 8px;
+    padding-left: 9px;
+    border-left: 2px solid #d8e8ef;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tool-row-mock {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--zai-muted);
+    font: 11px/1.4 var(--zai-mono);
+  }
+  .tool-row-mock .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .tool-row-mock .dot.green { background: var(--zai-green); }
+  .tool-row-mock .dot.blue {
+    background: var(--zai-blue);
+    box-shadow: 0 0 0 3px rgba(45, 111, 143, 0.14);
+  }
+  .tool-row-mock .dot.faint { background: var(--zai-faint); }
+  .tool-row-mock .name { color: var(--zai-text); }
+  .bubble-body-mock {
+    color: var(--zai-text);
+    font: 13px/1.62 var(--zai-font);
+  }
+  .bubble-body-mock h4 {
+    margin: 8px 0 6px;
+    font: 700 13px/1.3 var(--zai-font);
+  }
+  .bubble-body-mock p { margin: 0 0 8px; }
+  .bubble-body-mock ul { margin: 4px 0 8px 18px; padding: 0; }
+  .bubble-body-mock li { margin: 2px 0; }
+  .bubble-body-mock strong { color: var(--zai-text); }
+
+  .actions-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding: 3px;
+    border: 1px solid rgba(205, 190, 172, 0.8);
+    border-radius: 999px;
+    background: rgba(255, 253, 248, 0.94);
+    box-shadow: 0 5px 14px rgba(64, 46, 30, 0.12);
+  }
+  .actions-row button {
+    border: 0;
+    background: transparent;
+    padding: 3px 9px;
+    border-radius: 999px;
+    color: var(--zai-muted);
+    font: 700 10px/1 var(--zai-font);
+    cursor: default;
+  }
+  .actions-row button.is-hot {
+    background: var(--zai-accent-soft);
+    color: var(--zai-accent-strong);
+  }
+
+  /* Library window mockup (Step 2) */
+  .lib {
+    display: grid;
+    grid-template-columns: 130px 1fr 220px;
+    height: 100%;
+    min-height: 380px;
+    background: #f3eee5;
+    color: var(--zai-text);
+    font-size: 12px;
+  }
+  .lib-col {
+    border-right: 1px solid var(--zai-border-strong);
+    overflow: hidden;
+  }
+  .lib-col:last-child { border-right: 0; }
+  .lib-section {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--zai-border);
+    color: var(--zai-muted);
+    font: 700 10px/1 var(--zai-font);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    background: rgba(255, 253, 248, 0.6);
+  }
+  .lib-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0;
+    background: var(--zai-panel);
+  }
+  .lib-list li {
+    padding: 4px 12px;
+    color: var(--zai-text);
+    border-left: 2px solid transparent;
+    cursor: default;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lib-list li.is-active {
+    background: var(--zai-accent-soft);
+    border-left-color: var(--zai-accent);
+    color: var(--zai-accent-strong);
+    font-weight: 700;
+  }
+  .lib-items {
+    background: var(--zai-panel-strong);
+    overflow: hidden;
+  }
+  .lib-items .row {
+    display: grid;
+    grid-template-columns: 18px 1fr 60px;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--zai-border);
+    align-items: center;
+  }
+  .lib-items .row.is-active {
+    background: var(--zai-accent-soft);
+    color: var(--zai-accent-strong);
+    font-weight: 700;
+  }
+  .lib-items .row .ico {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    background: linear-gradient(135deg, #b34040, #843535);
+    color: #fff;
+    text-align: center;
+    font: 700 9px/16px var(--zai-mono);
+  }
+  .lib-items .row .yr {
+    color: var(--zai-muted);
+    font: 600 11px/1 var(--zai-mono);
+    text-align: right;
+  }
+
+  /* Note panel mock (Step 5) */
+  .note-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #fff;
+  }
+  .note-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--zai-border);
+    background: rgba(255, 253, 248, 0.96);
+  }
+  .note-panel-head .t {
+    flex: 1;
+    color: var(--zai-text);
+    font: 700 12px/1 var(--zai-font);
+  }
+  .note-panel-head .save {
+    border: 1px solid rgba(47, 125, 81, 0.35);
+    border-radius: 8px;
+    background: var(--zai-panel);
+    color: var(--zai-green);
+    padding: 4px 9px;
+    font: 600 11px/1 var(--zai-font);
+  }
+  .note-body {
+    padding: 14px 18px;
+    color: var(--zai-text);
+    font: 13.5px/1.55 var(--zai-font);
+    overflow: hidden;
+  }
+  .note-body h2 {
+    margin: 0 0 8px;
+    font: 700 15px/1.3 var(--zai-font);
+  }
+  .note-body p { margin: 0 0 8px; }
+  .note-body .new-mark {
+    background: linear-gradient(180deg, transparent 60%, rgba(192, 103, 61, 0.2) 60%);
+  }
+
+  /* Insight callout ----------------------------------------------------- */
+  .callout {
+    display: flex;
+    gap: 12px;
+    margin: 24px 0 0;
+    padding: 12px 14px;
+    border: 1px dashed var(--zai-border-strong);
+    border-radius: 12px;
+    background: rgba(255, 253, 248, 0.6);
+  }
+  .callout .ico {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    background: var(--zai-blue-soft);
+    color: var(--zai-blue);
+    text-align: center;
+    line-height: 24px;
+    font: 800 13px/1 var(--zai-mono);
+  }
+  .callout .body {
+    flex: 1;
+    color: var(--zai-muted);
+    font: 12px/1.55 var(--zai-font);
+  }
+  .callout .body strong { color: var(--zai-text); }
+
+  /* Footer --------------------------------------------------------------- */
+  .footer {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px dashed var(--zai-border-strong);
+    color: var(--zai-muted);
+    font-size: 13px;
+  }
+  .footer a {
+    color: var(--zai-blue);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(45, 111, 143, 0.28);
+  }
+  .footer a:hover { border-bottom-color: currentColor; }
+
+  /* Small screens */
+  @media (max-width: 720px) {
+    .page { padding: 24px 16px 60px; }
+    .topbar { padding: 10px 16px; }
+    .hero h1 { font-size: 28px; }
+    .step-head { flex-direction: column; align-items: flex-start; }
+    .step-note { text-align: left; }
+  }
+</style>
+</head>
+<body class="lang-zh">
+
+<!-- Top bar ---------------------------------------------------------------- -->
+<div class="topbar">
+  <div class="topbar-brand">
+    <span class="logo">AI</span>
+    <span>Zotero AI Sidebar</span>
+  </div>
+  <div class="topbar-title">
+    <span class="zh">5 分钟上手</span>
+    <span class="en">5-Minute Quick Start</span>
+    <span class="sub zh">· 配置 → 提问 → 沉淀进 Zotero 笔记</span>
+    <span class="sub en">· configure → ask → land it in your Zotero note</span>
+  </div>
+  <div class="topbar-actions">
+    <div class="lang-switch" role="tablist" aria-label="Language switch">
+      <button data-lang="zh" type="button">中文</button>
+      <button data-lang="en" type="button">EN</button>
+    </div>
+    <a class="topbar-link" href="USAGE.zh-CN.md">
+      <span class="zh">完整功能手册 →</span>
+      <span class="en">Full reference →</span>
+    </a>
+  </div>
+</div>
+
+<main class="page">
+
+  <!-- Hero ---------------------------------------------------------------- -->
+  <section class="hero">
+    <div class="hero-eyebrow">QUICK START · FLOW A</div>
+    <h1 class="zh">从零跑通一次 AI 阅读循环</h1>
+    <h1 class="en">Run the full AI reading loop from scratch</h1>
+    <p class="zh">本页用 5 个步骤、10 张实景 mockup 把"打开 Zotero → 配模型 → 提问 → 看 trace → 存笔记"全流程演完一遍。视觉与产品真实 sidebar 完全一致(同一套 CSS 变量),你看到的就是装上插件后的样子。</p>
+    <p class="en">Five steps · ten product-faithful mockups walk you through the entire loop: <em>open Zotero → configure a model → ask → audit the trace → land the answer in a note</em>. The mockups reuse the real sidebar's CSS tokens — what you see is what you'll get after installing the XPI.</p>
+    <nav class="hero-toc">
+      <a href="#step-1"><span class="num">01</span><span class="zh">配置预设</span><span class="en">Configure preset</span></a>
+      <a href="#step-2"><span class="num">02</span><span class="zh">打开侧边栏</span><span class="en">Open the sidebar</span></a>
+      <a href="#step-3"><span class="num">03</span><span class="zh">问第一个问题</span><span class="en">Ask the first question</span></a>
+      <a href="#step-4"><span class="num">04</span><span class="zh">看 trace</span><span class="en">Audit the trace</span></a>
+      <a href="#step-5"><span class="num">05</span><span class="zh">存进笔记</span><span class="en">Save to a note</span></a>
+    </nav>
+  </section>
+
+  <!-- ================================================================== -->
+  <!-- STEP 01 · Configure first model preset                              -->
+  <!-- ================================================================== -->
+  <section class="step" id="step-1">
+    <div class="step-head">
+      <div class="step-title">
+        <span class="num">STEP 01</span>
+        <span class="name zh">配置第一个模型预设</span>
+        <span class="name en">Configure your first model preset</span>
+      </div>
+      <div class="step-note">
+        <span class="zh">第一次开侧边栏没预设时,会直接进添加状态;<strong>测试连接</strong> 必须通过再保存,免得问到一半才发现 key 错了。</span>
+        <span class="en">First sidebar launch with no preset drops you straight into the form. Always run <strong>Test connection</strong> before saving — fail loudly here, not mid-conversation.</span>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col">
+
+      <!-- Mockup 1A: Empty preset state -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">1A</span>
+          <span class="name zh">空预设状态</span>
+          <span class="name en">Empty preset state</span>
+          <span class="hint zh">无 API key 时,sidebar 不放过你</span>
+          <span class="hint en">No key, no chat — by design</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · Item Pane</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-tabs">
+                <div class="sb-tab">Info</div>
+                <div class="sb-tab">Notes</div>
+                <div class="sb-tab is-active">AI</div>
+              </div>
+              <div class="preset-empty-card">
+                <div class="h zh">还没有配置模型预设</div>
+                <div class="h en">No model preset yet</div>
+                <div class="p zh">至少配置一个 Provider + API key + Base URL + Model 才能开始对话。</div>
+                <div class="p en">Configure provider + API key + base URL + model id to start chatting.</div>
+                <div style="display:inline-flex;gap:8px;">
+                  <span class="btn-primary">+ <span class="zh">添加预设</span><span class="en">Add preset</span></span>
+                  <span class="btn-ghost"><span class="zh">从 JSON 导入</span><span class="en">Import JSON</span></span>
+                </div>
+              </div>
+              <div style="flex:1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mockup 1B: Filled preset form + test ok -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">1B</span>
+          <span class="name zh">填好字段 · 测试通过</span>
+          <span class="name en">Fields filled · test passed</span>
+          <span class="hint zh">绿勾出现才点保存</span>
+          <span class="hint en">Save only after the green check</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · Item Pane</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-tabs">
+                <div class="sb-tab">Info</div>
+                <div class="sb-tab">Notes</div>
+                <div class="sb-tab is-active">AI</div>
+              </div>
+              <div class="preset-edit">
+                <h4>
+                  <span class="zh">新建预设</span>
+                  <span class="en">New preset</span>
+                </h4>
+                <div class="field"><label>Provider</label><div class="ctrl is-select">openai</div></div>
+                <div class="field"><label>Display</label><div class="ctrl">GPT-5 (work)</div></div>
+                <div class="field"><label>API key</label><div class="ctrl">••••••••••••••••sk-Xq9F</div></div>
+                <div class="field"><label>Base URL</label><div class="ctrl">https://api.openai.com/v1</div></div>
+                <div class="field"><label>Model</label><div class="ctrl">gpt-5</div></div>
+                <div class="field"><label>Max tokens</label><div class="ctrl">4096</div></div>
+                <div class="field"><label>Tool iters</label><div class="ctrl">12</div></div>
+                <div class="preset-test-row">
+                  <span class="btn-ghost"><span class="zh">测试连接</span><span class="en">Test connection</span></span>
+                  <span class="btn-primary"><span class="zh">保存</span><span class="en">Save</span></span>
+                  <span class="test-status ok">
+                    ✓ <span class="zh">连接成功 · 320 ms</span><span class="en">Connection OK · 320 ms</span>
+                  </span>
+                </div>
+              </div>
+              <div style="flex:1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <div class="ico">!</div>
+      <div class="body">
+        <strong class="zh">为什么 API key 字段是 password 风格?</strong>
+        <strong class="en">Why is the API key masked?</strong>
+        <span class="zh"> 它只存在本机 Zotero prefs,WebDAV 同步和导出都会主动剔除它,避免你不小心把 key 推到云端。换机时需要手动重填。</span>
+        <span class="en"> Keys live in local Zotero prefs only — WebDAV sync and config export both strip them. You'll re-enter on a new machine; that's intentional.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================== -->
+  <!-- STEP 02 · Open the sidebar / bind to a paper                       -->
+  <!-- ================================================================== -->
+  <section class="step" id="step-2">
+    <div class="step-head">
+      <div class="step-title">
+        <span class="num">STEP 02</span>
+        <span class="name zh">打开侧边栏并绑定到一篇论文</span>
+        <span class="name en">Open the sidebar &amp; bind to a paper</span>
+      </div>
+      <div class="step-note">
+        <span class="zh">主窗口选中 item 即绑定。聊天历史、上下文、笔记都<strong>按论文分别保存</strong>,切换论文不会污染另一篇的对话。</span>
+        <span class="en">Selecting an item binds the sidebar. Chat history, context, and notes are <strong>kept per paper</strong> — switching papers never bleeds context.</span>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col">
+
+      <!-- 2A: Library + selected item -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">2A</span>
+          <span class="name zh">主窗口 · 选中目标论文</span>
+          <span class="name en">Main window · paper selected</span>
+          <span class="hint zh">选中即绑定</span>
+          <span class="hint en">Selection = binding</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero — My Library</div>
+          </div>
+          <div class="window-body">
+            <div class="lib">
+              <div class="lib-col">
+                <div class="lib-section">Library</div>
+                <ul class="lib-list">
+                  <li>📚 My Library</li>
+                  <li class="is-active">📁 VLA Papers</li>
+                  <li>📁 Robotics</li>
+                  <li>📁 Imitation</li>
+                  <li>🏷️ Tags</li>
+                </ul>
+              </div>
+              <div class="lib-col lib-items">
+                <div class="row">
+                  <div class="ico">π</div>
+                  <div>RT-2: Vision-Language-Action Models</div>
+                  <div class="yr">2023</div>
+                </div>
+                <div class="row is-active">
+                  <div class="ico">π</div>
+                  <div>π0.5: a Vision-Language-Action Model</div>
+                  <div class="yr">2025</div>
+                </div>
+                <div class="row">
+                  <div class="ico">π</div>
+                  <div>OpenVLA: Open-Source VLA</div>
+                  <div class="yr">2024</div>
+                </div>
+                <div class="row">
+                  <div class="ico">π</div>
+                  <div>Octo: Open-Source Generalist Policy</div>
+                  <div class="yr">2024</div>
+                </div>
+              </div>
+              <div class="lib-col">
+                <div class="lib-section">
+                  <span class="zh">条目面板 · AI</span>
+                  <span class="en">Item Pane · AI</span>
+                </div>
+                <div style="padding:10px 12px;background:rgba(255,253,248,0.84);border-bottom:1px solid var(--zai-border)">
+                  <div style="font:700 12px/1.3 var(--zai-font)">π0.5: a Vision-Language-Action Model</div>
+                  <div style="margin-top:2px;color:var(--zai-muted);font:11px/1.4 var(--zai-mono)">Item 1241 · 2025</div>
+                </div>
+                <div style="padding:14px 12px;color:var(--zai-muted);font-size:12px;line-height:1.55">
+                  <span class="zh">已就绪。配置模型预设后,可直接询问当前 Zotero 条目或 PDF 内容。</span>
+                  <span class="en">Ready. With a preset configured, ask about this item or its PDF directly.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2B: Sidebar bound to paper, ready -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">2B</span>
+          <span class="name zh">侧边栏 · 已绑定 · 就绪状态</span>
+          <span class="name en">Sidebar · bound · ready</span>
+          <span class="hint zh">每篇论文一条线程</span>
+          <span class="hint en">One thread per paper</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241 · 2025 · arxiv:2501.…</div>
+              </div>
+              <div class="messages-mock" style="min-height:180px">
+                <div class="bubble-assistant-mock">
+                  <div class="bubble-head-mock">
+                    <span class="bubble-avatar-mock">AI</span>
+                    <span class="bubble-role-mock">AI</span>
+                  </div>
+                  <div class="bubble-body-mock">
+                    <p class="zh">已就绪。可以直接问 — 我会按需查看摘要、PDF 全文、批注、当前选中片段。</p>
+                    <p class="en">Ready. Ask anything — I'll fetch the abstract, full PDF, annotations, or your current selection on demand.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="quick-prompts-mock">
+                <button><span class="zh">总结论文</span><span class="en">Summarize</span></button>
+                <button><span class="zh">解释方法</span><span class="en">Explain method</span></button>
+                <button><span class="zh">找数据</span><span class="en">Pull numbers</span></button>
+                <button class="pill"><span class="zh">未读</span><span class="en">Tasks</span><span class="badge">0</span></button>
+              </div>
+              <div class="composer-mock">
+                <div class="ta is-placeholder zh">问点什么... (Enter 发送,Shift+Enter 换行)</div>
+                <div class="ta is-placeholder en">Ask anything… (Enter to send, Shift+Enter for newline)</div>
+                <div class="composer-footer-mock">
+                  <span class="switch">gpt-5</span>
+                  <span class="switch blue">reasoning · medium</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="send-btn disabled">↑</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================================================================== -->
+  <!-- STEP 03 · Ask first question                                       -->
+  <!-- ================================================================== -->
+  <section class="step" id="step-3">
+    <div class="step-head">
+      <div class="step-title">
+        <span class="num">STEP 03</span>
+        <span class="name zh">问第一个问题</span>
+        <span class="name en">Ask the first question</span>
+      </div>
+      <div class="step-note">
+        <span class="zh">在 Reader 选中文字会出现 <strong>选中片段 chip</strong>。这是显式 UI,不会因为 PDF 选区变化而抖动 sidebar。</span>
+        <span class="en">Selecting PDF text raises a <strong>selection chip</strong>. It's explicit — the sidebar never re-renders just because the selection changed.</span>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col">
+
+      <!-- 3A: Empty composer -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">3A</span>
+          <span class="name zh">composer · 空 · quick prompts 在上</span>
+          <span class="name en">Composer · empty · quick prompts above</span>
+          <span class="hint zh">一键预设按钮可在设置自定义</span>
+          <span class="hint en">Quick prompts editable in settings</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241</div>
+              </div>
+              <div class="messages-mock" style="min-height:140px"></div>
+              <div class="quick-prompts-mock">
+                <button><span class="zh">总结论文</span><span class="en">Summarize</span></button>
+                <button><span class="zh">解释方法</span><span class="en">Explain method</span></button>
+                <button><span class="zh">找数据</span><span class="en">Pull numbers</span></button>
+                <button class="pill"><span class="zh">未读</span><span class="en">Tasks</span><span class="badge">0</span></button>
+              </div>
+              <div class="composer-mock">
+                <div class="ta is-placeholder zh">问点什么... (Enter 发送,Shift+Enter 换行)</div>
+                <div class="ta is-placeholder en">Ask anything… (Enter to send, Shift+Enter for newline)</div>
+                <div class="composer-footer-mock">
+                  <span class="switch">gpt-5</span>
+                  <span class="switch blue">reasoning · medium</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="send-btn disabled">↑</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3B: Question typed + selection chip -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">3B</span>
+          <span class="name zh">已输入问题 · 附带选中片段</span>
+          <span class="name en">Question typed · selection attached</span>
+          <span class="hint zh">橙色 chip = PDF 选区已带上</span>
+          <span class="hint en">Orange chip = selection attached</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241</div>
+              </div>
+              <div class="messages-mock" style="min-height:140px"></div>
+              <div class="quick-prompts-mock">
+                <button><span class="zh">总结论文</span><span class="en">Summarize</span></button>
+                <button><span class="zh">解释方法</span><span class="en">Explain method</span></button>
+                <button><span class="zh">找数据</span><span class="en">Pull numbers</span></button>
+                <button class="pill"><span class="zh">未读</span><span class="en">Tasks</span><span class="badge">0</span></button>
+              </div>
+              <div class="composer-mock">
+                <div class="selection-chip">
+                  📎
+                  <span class="zh">选中片段:&ldquo;While most robotic learning systems…&rdquo;</span>
+                  <span class="en">Selection: "While most robotic learning systems…"</span>
+                  <span class="x">×</span>
+                </div>
+                <div class="ta zh">帮我用 5 行总结这篇论文,并指出它的核心创新和最大局限。</div>
+                <div class="ta en">Summarize this paper in 5 lines, then call out its core contribution and biggest limitation.</div>
+                <div class="composer-footer-mock">
+                  <span class="switch">gpt-5</span>
+                  <span class="switch blue">reasoning · medium</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="send-btn">↑</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================================================================== -->
+  <!-- STEP 04 · Audit the trace                                          -->
+  <!-- ================================================================== -->
+  <section class="step" id="step-4">
+    <div class="step-head">
+      <div class="step-title">
+        <span class="num">STEP 04</span>
+        <span class="name zh">看 trace · 确认 AI 真的读了 PDF</span>
+        <span class="name en">Audit the trace — did the AI actually read the PDF?</span>
+      </div>
+      <div class="step-note">
+        <span class="zh">每条回答上方的 <strong>思考块 + 工具 trace</strong> 是判断"AI 是否读了原文"的关键。回答凭空发挥时,先看 trace 有没有 <code>zotero_get_full_pdf</code> 这类调用。</span>
+        <span class="en">The <strong>thinking block + tool trace</strong> above every answer is your hallucination detector. If an answer feels invented, check whether <code>zotero_get_full_pdf</code> ever fired.</span>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col">
+
+      <!-- 4A: Streaming -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">4A</span>
+          <span class="name zh">流式中 · live progress chip</span>
+          <span class="name en">Streaming · live progress chip</span>
+          <span class="hint zh">蓝色 spinner = 当前正在执行的工具</span>
+          <span class="hint en">Blue spinner = tool in flight</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241</div>
+              </div>
+              <div class="messages-mock">
+                <div class="bubble-user-mock">
+                  <span class="zh">帮我用 5 行总结这篇论文,并指出它的核心创新和最大局限。</span>
+                  <span class="en">Summarize this paper in 5 lines, then call out its core contribution and biggest limitation.</span>
+                </div>
+                <div class="bubble-assistant-mock">
+                  <div class="bubble-head-mock">
+                    <span class="bubble-avatar-mock">AI</span>
+                    <span class="bubble-role-mock">AI</span>
+                  </div>
+                  <div class="tool-trace-mock">
+                    <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_get_current_item</span><span> · <span class="zh">读取元数据</span><span class="en">metadata</span></span></div>
+                    <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_get_full_pdf</span><span> · <span class="zh">取全文 12.4k tokens</span><span class="en">12.4k tokens</span></span></div>
+                    <div class="tool-row-mock"><span class="dot blue"></span><span class="name">zotero_search_pdf</span><span> · "<span class="zh">开放世界泛化</span><span class="en">open-world generalization</span>"</span></div>
+                  </div>
+                  <div class="live-progress">
+                    <span class="dot"></span>
+                    <span class="zh">检索中</span>
+                    <span class="en">searching</span>
+                    <span class="detail zh">· 正在合成回答…</span>
+                    <span class="detail en">· composing answer…</span>
+                  </div>
+                </div>
+              </div>
+              <div class="composer-mock">
+                <div class="ta is-placeholder zh">流式输出中…</div>
+                <div class="ta is-placeholder en">Streaming…</div>
+                <div class="composer-footer-mock">
+                  <span class="switch">gpt-5</span>
+                  <span class="switch blue">reasoning · medium</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="btn-ghost" style="padding:5px 12px;border-color:#e2b39d;background:#fff8f3;color:var(--zai-accent-strong)"><span class="zh">停止</span><span class="en">Stop</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4B: Final assistant body with collapsed thinking + trace -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">4B</span>
+          <span class="name zh">完成 · 思考折叠 · trace 全绿</span>
+          <span class="name en">Done · thinking collapsed · trace all green</span>
+          <span class="hint zh">点开思考块可看模型推理摘要</span>
+          <span class="hint en">Expand to read the reasoning summary</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241</div>
+              </div>
+              <div class="messages-mock">
+                <div class="bubble-user-mock">
+                  <span class="zh">帮我用 5 行总结这篇论文…</span>
+                  <span class="en">Summarize this paper in 5 lines…</span>
+                </div>
+                <div class="bubble-assistant-mock">
+                  <div class="bubble-head-mock">
+                    <span class="bubble-avatar-mock">AI</span>
+                    <span class="bubble-role-mock">AI</span>
+                  </div>
+                  <div class="thinking-mock">
+                    <span class="zh">思考 (展开,420 字)</span>
+                    <span class="en">Thinking (expand, ~420 words)</span>
+                  </div>
+                  <div class="tool-trace-mock">
+                    <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_get_current_item</span></div>
+                    <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_get_full_pdf</span><span> · 12.4k</span></div>
+                    <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_search_pdf</span><span> · 3 hits</span></div>
+                  </div>
+                  <div class="bubble-body-mock">
+                    <p class="zh"><strong>核心结论。</strong> π0.5 把开放世界泛化作为一等目标 — 而不是只在训练分布附近刷分。</p>
+                    <p class="en"><strong>Core claim.</strong> π0.5 treats open-world generalization as a first-class goal, not just in-distribution scores.</p>
+                    <h4 class="zh">创新</h4>
+                    <h4 class="en">What's new</h4>
+                    <ul>
+                      <li class="zh">多家庭训练数据,显式覆盖新物体 / 新家庭</li>
+                      <li class="zh">推理时长链式语言指令 → 子动作分解</li>
+                      <li class="en">Multi-home training data covering novel objects &amp; novel homes</li>
+                      <li class="en">Long-horizon language instructions decomposed at inference</li>
+                    </ul>
+                    <p class="zh"><strong>最大局限。</strong> 数据收集成本高,新家庭/物体仍要更多 demo 才稳。</p>
+                    <p class="en"><strong>Biggest limit.</strong> Data-collection cost is steep; novel homes/objects still need more demos to stabilize.</p>
+                  </div>
+                  <div class="actions-row">
+                    <button><span class="zh">复制</span><span class="en">Copy</span></button>
+                    <button><span class="zh">保存到笔记</span><span class="en">Save to note</span></button>
+                    <button><span class="zh">Debug 复制</span><span class="en">Debug copy</span></button>
+                  </div>
+                </div>
+              </div>
+              <div class="composer-mock">
+                <div class="ta is-placeholder zh">继续追问…</div>
+                <div class="ta is-placeholder en">Follow up…</div>
+                <div class="composer-footer-mock">
+                  <span class="switch">gpt-5</span>
+                  <span class="switch blue">reasoning · medium</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="send-btn disabled">↑</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <div class="ico">i</div>
+      <div class="body">
+        <strong class="zh">trace 全绿就一定可信吗?</strong>
+        <strong class="en">Is an all-green trace enough?</strong>
+        <span class="zh"> 不一定。绿点表示工具<em>调用成功</em>,不保证模型<em>正确使用</em>了返回值。怀疑某条结论时,把光标停在对应工具行 → 展开输入/输出对比原文。</span>
+        <span class="en"> Not necessarily. Green means the tool <em>succeeded</em>, not that the model <em>used its output correctly</em>. When in doubt, expand the row to compare inputs/outputs against the source PDF.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================== -->
+  <!-- STEP 05 · Save to a note                                           -->
+  <!-- ================================================================== -->
+  <section class="step" id="step-5">
+    <div class="step-head">
+      <div class="step-title">
+        <span class="num">STEP 05</span>
+        <span class="name zh">把回答沉淀进 Zotero 笔记</span>
+        <span class="name en">Land the answer in a Zotero note</span>
+      </div>
+      <div class="step-note">
+        <span class="zh">两条路径并存:鼠标悬停的 <strong>保存到笔记</strong> 是手动一击,而对模型说"追加进笔记"会触发 <code>zotero_append_to_note</code> — trace 上看得见,可审计。</span>
+        <span class="en">Two paths coexist: hover for a manual <strong>Save to note</strong>, or instruct the model to append — that fires <code>zotero_append_to_note</code>, visible &amp; auditable in the trace.</span>
+      </div>
+    </div>
+
+    <div class="mockup-grid two-col">
+
+      <!-- 5A: Manual save - hover actions -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">5A</span>
+          <span class="name zh">手动 · hover 消息显示动作</span>
+          <span class="name en">Manual · hover reveals actions</span>
+          <span class="hint zh">最快路径,所见即所得</span>
+          <span class="hint en">Fastest path · WYSIWYG</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">Zotero · AI Sidebar</div>
+          </div>
+          <div class="window-body">
+            <div class="sb">
+              <div class="sb-itemhead">
+                <div class="title">π0.5: a Vision-Language-Action Model</div>
+                <div class="meta">Item ID: 1241</div>
+              </div>
+              <div class="messages-mock">
+                <div class="bubble-assistant-mock">
+                  <div class="bubble-head-mock">
+                    <span class="bubble-avatar-mock">AI</span>
+                    <span class="bubble-role-mock">AI</span>
+                  </div>
+                  <div class="bubble-body-mock">
+                    <p class="zh"><strong>核心结论。</strong> π0.5 把开放世界泛化作为一等目标…</p>
+                    <p class="en"><strong>Core claim.</strong> π0.5 treats open-world generalization as a first-class goal…</p>
+                  </div>
+                  <div class="actions-row">
+                    <button><span class="zh">复制</span><span class="en">Copy</span></button>
+                    <button class="is-hot"><span class="zh">★ 保存到笔记</span><span class="en">★ Save to note</span></button>
+                    <button><span class="zh">Debug 复制</span><span class="en">Debug copy</span></button>
+                  </div>
+                </div>
+                <div style="color:var(--zai-faint);font:12px/1.5 var(--zai-mono);text-align:center;margin-top:18px">
+                  <span class="zh">→ 自动追加到当前论文的子笔记;没有就新建一条</span>
+                  <span class="en">→ Appends to this paper's child note (creates one if missing)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5B: AI-driven append + note panel reflecting the change -->
+      <div class="mock">
+        <div class="mock-caption">
+          <span class="num">5B</span>
+          <span class="name zh">AI 写入 · 笔记面板同步更新</span>
+          <span class="name en">AI writes · note panel syncs</span>
+          <span class="hint zh">trace 中显式记录每次写入</span>
+          <span class="hint en">Every write is in the trace</span>
+        </div>
+        <div class="window">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <div class="window-title">
+              <span class="zh">Zotero · 笔记面板 + AI 侧边栏</span>
+              <span class="en">Zotero · Note panel + AI Sidebar</span>
+            </div>
+          </div>
+          <div class="window-body">
+            <div style="display:grid;grid-template-columns:0.95fr 1.05fr;height:100%;min-height:380px">
+              <!-- Note panel side -->
+              <div class="note-panel" style="border-right:2px solid rgba(192,103,61,0.55)">
+                <div class="note-panel-head">
+                  <div class="t">
+                    <span class="zh">π0.5 · 阅读笔记</span>
+                    <span class="en">π0.5 · Reading notes</span>
+                  </div>
+                  <span class="save">✓ <span class="zh">已保存</span><span class="en">Saved</span></span>
+                </div>
+                <div class="note-body">
+                  <h2 class="zh">π0.5 阅读小结</h2>
+                  <h2 class="en">π0.5 reading summary</h2>
+                  <p class="zh">2025-05-10 · GPT-5 总结。</p>
+                  <p class="en">2025-05-10 · summarized by GPT-5.</p>
+                  <p class="zh"><span class="new-mark">核心结论:π0.5 把开放世界泛化作为一等目标 — 不只是在训练分布附近刷分。</span></p>
+                  <p class="en"><span class="new-mark">Core: π0.5 treats open-world generalization as a first-class goal — not just in-distribution scores.</span></p>
+                  <p class="zh"><span class="new-mark">局限:数据收集成本高,新家庭/物体仍需更多 demo。</span></p>
+                  <p class="en"><span class="new-mark">Limit: data-collection cost is steep; novel scenes still need more demos.</span></p>
+                </div>
+              </div>
+              <!-- Sidebar side -->
+              <div class="sb" style="background:none">
+                <div class="messages-mock">
+                  <div class="bubble-user-mock">
+                    <span class="zh">把这段总结追加进这条论文的笔记里。</span>
+                    <span class="en">Append this summary to the note for this paper.</span>
+                  </div>
+                  <div class="bubble-assistant-mock">
+                    <div class="bubble-head-mock">
+                      <span class="bubble-avatar-mock">AI</span>
+                      <span class="bubble-role-mock">AI</span>
+                    </div>
+                    <div class="tool-trace-mock">
+                      <div class="tool-row-mock"><span class="dot green"></span><span class="name">zotero_append_to_note</span><span> · <span class="zh">追加 2 段</span><span class="en">+2 paragraphs</span></span></div>
+                    </div>
+                    <div class="bubble-body-mock">
+                      <p class="zh">✓ 已追加到当前论文的子笔记。可继续要求改写或补充。</p>
+                      <p class="en">✓ Appended to this paper's child note. Ask for rewrites or additions any time.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <div class="ico">→</div>
+      <div class="body">
+        <strong class="zh">手动 vs AI 写入,怎么选?</strong>
+        <strong class="en">Manual vs. AI-driven append — which one?</strong>
+        <span class="zh"> 大段成型内容(如总结、对比表)用 AI 调 <code>zotero_append_to_note</code> 一次到位;边读边记的零碎想法手动复制更直接。两条路都不会丢消息 — 笔记面板和 AI 聊天是相互独立的工作区。</span>
+        <span class="en"> For chunky finished content (summaries, comparison tables), let the model call <code>zotero_append_to_note</code> in one shot. For ad-hoc reading notes, hover &amp; copy is more direct. Either way: the note panel and chat are independent — neither overrides the other.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer ------------------------------------------------------------- -->
+  <footer class="footer">
+    <p>
+      <span class="zh">想看每个功能的字段表、Slash 命令、Agent 工具完整清单?跳转完整功能手册:</span>
+      <span class="en">Need the full field list, slash commands, and agent-tool catalog? Jump to the full reference:</span>
+      <a href="USAGE.zh-CN.md">USAGE.zh-CN.md</a> · <a href="USAGE.md">USAGE.md (English)</a>
+    </p>
+    <p>
+      <span class="zh">视觉 token 全部来自 <code>addon/content/sidebar.css</code> · 设计契约见 <a href="HARNESS_ENGINEERING.md">HARNESS_ENGINEERING.md</a></span>
+      <span class="en">All visual tokens come from <code>addon/content/sidebar.css</code> · design contract: <a href="HARNESS_ENGINEERING.md">HARNESS_ENGINEERING.md</a></span>
+    </p>
+  </footer>
+
+</main>
+
+<script>
+  (function () {
+    var btns = document.querySelectorAll('.lang-switch button');
+    function setLang(lang) {
+      document.body.classList.remove('lang-zh', 'lang-en');
+      document.body.classList.add('lang-' + lang);
+      try { localStorage.setItem('zai-quickstart-lang', lang); } catch (_) {}
+    }
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () { setLang(b.dataset.lang); });
+    });
+    var saved;
+    try { saved = localStorage.getItem('zai-quickstart-lang'); } catch (_) {}
+    if (saved === 'en' || saved === 'zh') setLang(saved);
+  })();
+</script>
+
+</body>
+</html>

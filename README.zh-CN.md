@@ -4,7 +4,11 @@
 
 Zotero AI Sidebar 是一个适配 Zotero 7/8/9 的插件，会在条目面板 / PDF 阅读流程旁边加上一个 AI 对话面板。它被设计成一个轻量的论文研究 agent：由模型自己决定何时去查看当前 Zotero 条目、批注、PDF 片段、PDF 全文、截图，或通过插件暴露的 Zotero 工具写入批注。
 
-📖 **[完整使用指南（HTML 网页）](docs/usage.html)** —— 含安装、配置、Slash 命令、云同步、灾备的分步说明
+📖 **[完整使用指南](docs/USAGE.zh-CN.md)** ([English](docs/USAGE.md)) —— 5 分钟上手、常见场景、功能手册、故障排查
+
+🎨 **可视化操作走查**(GitHub Pages 已渲染,直接在浏览器看真实 sidebar 风格的 mockup):
+- [5 分钟上手 · 中/EN 切换 · 5 步 × 10 张实景图](https://xuhan-rgb.github.io/zotero-ai-sidebar/quick-start.html)
+- [任务队列设计原型](https://xuhan-rgb.github.io/zotero-ai-sidebar/design_mockup.html)
 
 ## 亮点
 
