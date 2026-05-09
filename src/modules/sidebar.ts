@@ -513,17 +513,32 @@ function renderToolbar(doc: Document, mount: HTMLElement, state: PanelState) {
       ? "复制当前对话为 Markdown（含工具上下文和 PDF 片段）"
       : "复制当前对话为 Markdown（只含论文介绍和对话）";
     copyAll.addEventListener("click", () => {
-      const markdown = formatConversationMarkdown(
-        state,
-        state.copyDebugContext,
-      );
-      void copyToClipboard(
-        doc,
-        markdown,
-        undefined,
-        markdownToClipboardHTML(doc, markdown),
-      );
-      flashButton(copyAll, "已复制");
+      void (async () => {
+        // Only build the system prompt when the debug toggle is on — it's an
+        // async Zotero.Items.get + tool-manual assembly, not free.
+        let systemPrompt: string | undefined;
+        if (state.copyDebugContext) {
+          try {
+            const ledger = formatContextLedger(state.messages);
+            const built = await buildSystemContextOnly(state.itemID, ledger);
+            systemPrompt = built.systemPrompt;
+          } catch {
+            systemPrompt = undefined;
+          }
+        }
+        const markdown = formatConversationMarkdown(
+          state,
+          state.copyDebugContext,
+          systemPrompt,
+        );
+        await copyToClipboard(
+          doc,
+          markdown,
+          undefined,
+          markdownToClipboardHTML(doc, markdown),
+        );
+        flashButton(copyAll, "已复制");
+      })();
     });
     topRow.append(copyAll);
 
@@ -561,9 +576,7 @@ function renderToolbar(doc: Document, mount: HTMLElement, state: PanelState) {
   hide.addEventListener("click", () => hideCurrentSidebar(mount));
   bottomRow.append(hide);
   bottomRow.append(renderChatFontSizeControl(doc, mount, state));
-  if (state.messages.length > 0) {
-    bottomRow.append(renderCopyDebugToggle(doc, mount, state));
-  }
+  bottomRow.append(renderCopyDebugToggle(doc, mount, state));
   bar.append(topRow, bottomRow);
   return bar;
 }
@@ -2957,20 +2970,24 @@ async function sendMessage(
     getStoredSelectionAnnotation(state.itemID),
   );
   if (selectedSnapshot && selectedText) selectedSnapshot.text = selectedText;
-  const selectionQuestionAnnotationEnabled =
-    !options.explainSelection &&
-    options.fromComposer === true &&
+  // Suggestion card (with color chip) is enabled for two paths:
+  //   1. Explain-selection button — always, when a selection exists.
+  //   2. Free-form selection question from composer — only if the user
+  //      kept the prefs toggle on (default on).
+  // Both share the same downstream handling: inject color guide into the
+  // user message, ask the model to emit `建议颜色：#hex`, and validate the
+  // hex on save.
+  const annotationSuggestionEnabled =
     !!selectedText &&
     !!selectedSnapshot &&
-    quickPromptSettings.selectionQuestionAnnotationEnabled;
+    (options.explainSelection ||
+      (options.fromComposer === true &&
+        quickPromptSettings.selectionQuestionAnnotationEnabled));
   const selectionContext = selectedText ? selectionPayload.context : {};
-  const annotationColorGuide = selectionQuestionAnnotationEnabled
+  const annotationColorGuide = annotationSuggestionEnabled
     ? loadToolSettings(zoteroPrefs()).annotationColorGuide.trim()
     : "";
-  const snapshot =
-    options.explainSelection || selectionQuestionAnnotationEnabled
-      ? selectedSnapshot
-      : null;
+  const snapshot = annotationSuggestionEnabled ? selectedSnapshot : null;
   const userMessage: Message = {
     role: "user",
     content: baseContent,
@@ -2986,8 +3003,7 @@ async function sendMessage(
           context: {
             selectedText,
             explainSelection: options.explainSelection,
-            ...((options.explainSelection ||
-              selectionQuestionAnnotationEnabled) && {
+            ...(annotationSuggestionEnabled && {
               annotationSuggestion: true,
             }),
             ...(annotationColorGuide ? { annotationColorGuide } : {}),
@@ -3002,8 +3018,7 @@ async function sendMessage(
                     attachmentID: snapshot.attachmentID,
                     annotation: detachAnnotationSnapshot(snapshot.annotation),
                   },
-                  queuedAnnotationColorEnabled:
-                    selectionQuestionAnnotationEnabled,
+                  queuedAnnotationColorEnabled: annotationSuggestionEnabled,
                 }
               : {}),
             ...selectionContext,
@@ -3031,7 +3046,7 @@ async function sendMessage(
   }
   await streamAssistant(mount, state, history, userMessage, {
     annotationSnapshot: snapshot,
-    annotationColorEnabled: selectionQuestionAnnotationEnabled,
+    annotationColorEnabled: annotationSuggestionEnabled,
     fullTextHighlight: options.fullTextHighlight,
     taskID: userMessage.task?.id,
   });
@@ -3354,6 +3369,7 @@ async function streamAssistant(
       previousMessages: history,
       selectionAnnotation: () => getStoredSelectionAnnotation(state.itemID),
       fullTextHighlight: options.fullTextHighlight,
+      annotationColorGuide: loadToolSettings(zoteroPrefs()).annotationColorGuide,
       getActiveReader: () =>
         getReaderForCurrentSelection(mount.ownerDocument!.defaultView, state.itemID),
       // Curry the live document and itemID so the model writes to whatever
@@ -7165,6 +7181,7 @@ function messageToClipboard(message: Message, includeDebugContext: boolean): str
 function formatConversationMarkdown(
   state: PanelState,
   includeDebugContext: boolean,
+  systemPrompt?: string,
 ): string {
   const item = state.itemID == null ? null : Zotero.Items.get(state.itemID);
   const title = item?.getField("title") || "未选择条目";
@@ -7176,6 +7193,17 @@ function formatConversationMarkdown(
     "",
     ...formatItemIntroductionMarkdown(state.itemID, item),
   ];
+
+  if (includeDebugContext && systemPrompt) {
+    lines.push(
+      "## System Prompt",
+      "",
+      "```",
+      systemPrompt,
+      "```",
+      "",
+    );
+  }
 
   for (const message of state.messages) {
     lines.push(`## ${message.role === "user" ? "You" : "AI"}`, "");

@@ -23,6 +23,11 @@ export interface ToolFactoryOptions {
   itemID: number | null;
   policy?: ContextPolicy;
   selectionAnnotation?: () => SelectionAnnotationDraft | null;
+  // Configured PDF annotation color preset text from user prefs. When
+  // present, it gets parsed into the `color` schema description for
+  // annotation write tools so the model sees the hex→category mapping at
+  // the exact field where it picks a color (stronger than system prompt).
+  annotationColorGuide?: string;
   // Kept for the explicit "full-text highlights" quick prompt. Tool
   // availability no longer branches on this flag; the model sees the same
   // manual/tools and decides what to call.
@@ -67,6 +72,9 @@ export function createZoteroAgentToolSession(
 ): ZoteroAgentToolSession {
   const policy = options.policy ?? DEFAULT_CONTEXT_POLICY;
   const highlightSession = createFullTextHighlightState(options);
+  const colorDescription = buildAnnotationColorDescription(
+    options.annotationColorGuide,
+  );
   const tools: AgentTool[] = [
     {
       name: "zotero_get_current_item",
@@ -262,9 +270,7 @@ export function createZoteroAgentToolSession(
           comment: stringSchema(
             "Annotation comment to save on the selected PDF text.",
           ),
-          color: stringSchema(
-            "Optional Zotero annotation color, such as #ffd400. If omitted, the selection/default color is used.",
-          ),
+          color: stringSchema(colorDescription),
           type: stringSchema(
             "Optional annotation type. Supported values are highlight or underline. If omitted, highlight is used.",
           ),
@@ -308,7 +314,7 @@ export function createZoteroAgentToolSession(
         };
       },
     },
-    createAnnotatePassageTool(policy, highlightSession),
+    createAnnotatePassageTool(policy, highlightSession, colorDescription),
     createAppendToChildNoteTool(options),
   ];
 
@@ -608,6 +614,7 @@ function readerTextSlice(
 function createAnnotatePassageTool(
   policy: ContextPolicy,
   session: FullTextHighlightState,
+  colorDescription: string,
 ): AgentTool {
   return {
     name: "zotero_annotate_passage",
@@ -622,7 +629,7 @@ function createAnnotatePassageTool(
         comment: stringSchema(
           "Reading note (≤ 80 chars Chinese), explaining why this passage is important.",
         ),
-        color: stringSchema("Optional Zotero annotation color, e.g. #ffd400."),
+        color: stringSchema(colorDescription),
       },
       ["text", "comment"],
     ),
@@ -703,6 +710,37 @@ function objectSchema(
     required,
     additionalProperties: false,
   };
+}
+
+// Build a rich `color` parameter description by parsing the user's
+// configured annotation color preset. We prefer this over a generic
+// "Optional Zotero annotation color, e.g. #ffd400." string because the
+// schema description is read by the model at the exact moment it fills
+// the `color` field — stronger than restating the rule in system prompt
+// or user message. The trailing warning addresses a real failure mode
+// observed in practice: models permute the hex→category mapping based
+// on color intuition (red=danger, green=good) instead of the configured
+// project-specific semantics.
+function buildAnnotationColorDescription(guide?: string): string {
+  const fallback =
+    "Optional Zotero annotation color, e.g. #ffd400. If omitted, the selection/default color is used.";
+  if (!guide) return fallback;
+  const entries: string[] = [];
+  for (const line of guide.split(/\r?\n/)) {
+    const match = line.match(/(#[0-9a-fA-F]{6})\s*(.*)$/);
+    if (!match) continue;
+    const hex = match[1].toLowerCase();
+    const rest = match[2].trim().replace(/[。\.]+\s*$/, "");
+    entries.push(rest ? `- ${hex} — ${rest}` : `- ${hex}`);
+  }
+  if (!entries.length) return fallback;
+  return [
+    "Optional Zotero annotation color. MUST pick a hex from the configured presets below; omit the field if no category clearly matches (do not force-fit colors).",
+    "",
+    ...entries,
+    "",
+    "IMPORTANT: These category-to-hex mappings are project-specific and may CONTRADICT common color intuition. Map by the category labels above, NOT by general color associations (e.g., do not assume red=problem, green=good results, or orange=warning — read each entry).",
+  ].join("\n");
 }
 
 function stringSchema(description: string): { [key: string]: unknown } {

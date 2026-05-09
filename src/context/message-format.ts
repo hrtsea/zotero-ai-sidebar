@@ -407,9 +407,13 @@ function annotationSuggestionInstruction(
     "建议注释只能写当前选区和已核对上下文支持的内容；证据不足时明确写“基于当前上下文尚不能确定”。",
   ];
   if (context.annotationColorGuide) {
+    // Color list itself lives in system prompt (toolManualWithConfiguredGuides).
+    // Here we only attach the task-conditional pieces: tell the model to pick
+    // a preset color for this selection, and request the parser-readable
+    // `建议颜色：#hex` line. Don't paste the list again — that would burn
+    // ~150 tokens per turn and risks contradicting the system definition.
     lines.push(
-      "请参考 PDF 注释颜色预设，为本次选区选择一个最匹配的预设颜色；类别不明确时省略颜色，不要强行分类。",
-      `当前颜色预设：\n${context.annotationColorGuide}`,
+      "请参考 system prompt 中 `Configured PDF annotation color presets` 一节列出的预设，为本次选区挑一个最匹配的颜色；类别不明确时省略颜色，不要强行分类。",
       "如果选择了颜色，请在 `建议注释：` 段最后另起一行输出 `建议颜色：#hex`；只能使用预设中已有的 hex。",
     );
   }

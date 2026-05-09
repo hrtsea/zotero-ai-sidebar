@@ -95,7 +95,10 @@ describe('formatUserMessageForApi', () => {
     expect(formatted).toContain('[Selected text handling instruction]');
     expect(formatted).toContain('建议注释');
     expect(formatted).toContain('建议颜色：#hex');
-    expect(formatted).toContain('#2ea8e5 蓝色');
+    // The full color list lives in system prompt, not user message — this
+    // instruction only references it.
+    expect(formatted).toContain('Configured PDF annotation color presets');
+    expect(formatted).not.toContain('#2ea8e5 蓝色');
     expect(formatted.endsWith('[User question]\n这句话为什么重要？')).toBe(true);
   });
 });

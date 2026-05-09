@@ -130,9 +130,12 @@
     <html:div class="zai-pref-card">
       <html:div class="zai-pref-title">PDF 注释颜色预设</html:div>
       <html:p class="zai-pref-help">
-        配置 AI 写入 PDF 注释时允许使用的颜色分类。保存后会追加到 Zotero tool manual；Reset 可恢复默认预设。
+        AI 写入 PDF 注释时允许使用的颜色分类。保存后会自动接到模型（system prompt + annotate_passage 工具的 color 参数），<html:strong>用户提示词里不需要重复颜色定义</html:strong>。清空文本框可关闭分类，Reset 恢复默认。
       </html:p>
-      <html:textarea id="zai-tool-annotation-color-guide" placeholder="配置写入 PDF 注释时传给模型的颜色预设；保存后会追加到 Zotero tool manual。"></html:textarea>
+      <html:p class="zai-pref-help">
+        <html:strong>本文本框是颜色定义的唯一入口</html:strong>。在用户提示词或自定义按钮等其他位置写入与此处不一致的颜色规则会与系统注入冲突，模型可能不按本预设上色，结果难以稳定——如需调整颜色含义、增减颜色或关闭分类，请只在这里修改。
+      </html:p>
+      <html:textarea id="zai-tool-annotation-color-guide" placeholder="配置写入 PDF 注释时传给模型的颜色预设；保存后会追加到 Zotero tool manual 和 annotate_passage 工具 color 参数（无需在用户提示词中重复）。"></html:textarea>
       <html:div class="zai-pref-actions">
         <html:button id="zai-color-save" type="button">保存颜色预设</html:button>
         <html:button id="zai-tool-reset-color-guide" type="button">Reset 颜色预设</html:button>
