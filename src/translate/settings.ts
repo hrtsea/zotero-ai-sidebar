@@ -43,7 +43,11 @@ export function normalizeTranslateSettings(value: unknown): TranslateSettings {
 }
 
 function pickThinking(v: unknown): TranslateThinking {
-  return v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh'
+  return v === 'off' ||
+    v === 'low' ||
+    v === 'medium' ||
+    v === 'high' ||
+    v === 'xhigh'
     ? v
     : DEFAULT_TRANSLATE_SETTINGS.thinking;
 }

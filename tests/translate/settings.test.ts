@@ -9,6 +9,10 @@ describe('translate settings', () => {
     expect(normalizeTranslateSettings({ thinking: 'none' }).thinking).toBe('low');
   });
 
+  it("preserves 'off' thinking through save/load (was being silently reset to default)", () => {
+    expect(normalizeTranslateSettings({ thinking: 'off' }).thinking).toBe('off');
+  });
+
   it('normalizes translate trigger mode', () => {
     expect(normalizeTranslateSettings({ triggerMode: 'double' }).triggerMode).toBe('double');
     expect(normalizeTranslateSettings({ triggerMode: 'single' }).triggerMode).toBe('single');
