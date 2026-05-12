@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { PrefsStore } from '../../src/settings/storage';
 import { loadTranslateSettings, saveTranslateSettings } from '../../src/translate/settings';
-import { saveCache as saveTranslateCacheState } from '../../src/translate/cache';
 import { DEFAULT_TRANSLATE_SETTINGS } from '../../src/settings/types';
 import { savePresets } from '../../src/settings/storage';
 import { saveQuickPromptSettings } from '../../src/settings/quick-prompts';
@@ -18,7 +17,7 @@ import { loadPresets } from '../../src/settings/storage';
 import { loadQuickPromptSettings } from '../../src/settings/quick-prompts';
 import { loadToolSettings } from '../../src/settings/tool-settings';
 import { loadUiSettings } from '../../src/settings/ui-settings';
-import { loadChatMessages, saveChatMessages } from '../../src/settings/chat-history';
+import { saveChatMessages } from '../../src/settings/chat-history';
 
 function memPrefs(): PrefsStore {
   const map = new Map<string, string>();
@@ -77,7 +76,7 @@ beforeEach(() => {
 });
 
 describe('sync snapshot round trip', () => {
-  it('builds a snapshot with all settings sections and chat threads', async () => {
+  it('builds a snapshot with syncable settings and excludes local chat history', async () => {
     const prefs = memPrefs();
     savePresets(prefs, [
       {
@@ -155,13 +154,8 @@ describe('sync snapshot round trip', () => {
     expect(snapshot.toolSettings.webSearchMode).toBe('live');
     expect(snapshot.toolSettings.textAnnotationFontSize).toBe(22);
     expect(snapshot.uiSettings.composerQueueWhileSending).toBe(true);
-    expect(snapshot.threads).toHaveLength(1);
-    expect(snapshot.threads[0]).toMatchObject({
-      libraryType: 'user',
-      itemKey: 'AAAA1111',
-    });
-    expect(snapshot.threads[0].messages).toHaveLength(2);
-    expect(snapshot.threads[0].messages[0]).not.toHaveProperty('task');
+    expect(snapshot).not.toHaveProperty('threads');
+    expect(JSON.stringify(snapshot)).not.toContain('hi there');
     expect(snapshot.annotations).toEqual([]);
   });
 
@@ -179,7 +173,6 @@ describe('sync snapshot round trip', () => {
       ...loadToolSettings(sourcePrefs),
       textAnnotationFontSize: 24,
     });
-    await saveChatMessages(42, [{ role: 'user', content: 'first device' }]);
     const snapshot = await buildSyncSnapshot(sourcePrefs);
     const json = JSON.stringify(snapshot);
 
@@ -188,7 +181,7 @@ describe('sync snapshot round trip', () => {
     const parsed = parseSyncSnapshot(json);
     const result = await applySyncSnapshot(targetPrefs, parsed);
 
-    expect(result.threads.imported).toBe(1);
+    expect(result.annotations.imported).toBe(0);
     expect(loadUiSettings(targetPrefs).messageActionsPosition).toBe('top-right');
     expect(loadUiSettings(targetPrefs).chatFontFamily).toBe('LXGW WenKai, serif');
     expect(loadPresets(targetPrefs)).toEqual([]);
@@ -196,7 +189,6 @@ describe('sync snapshot round trip', () => {
     expect(loadToolSettings(targetPrefs).webSearchMode).toBe('disabled');
     expect(loadToolSettings(targetPrefs).textAnnotationFontSize).toBe(24);
     expect(loadUiSettings(targetPrefs).composerQueueWhileSending).toBe(true);
-    expect(await loadChatMessages(42)).toHaveLength(1);
   });
 
   it('rejects a snapshot with the wrong schema', () => {
@@ -207,7 +199,7 @@ describe('sync snapshot round trip', () => {
     expect(() => parseSyncSnapshot('not json')).toThrow(/解析/);
   });
 
-  it('counts unresolved threads when the local item key is missing', async () => {
+  it('ignores legacy thread payloads because chat history is local-only', async () => {
     const json = JSON.stringify({
       schema: SYNC_SCHEMA,
       exportedAt: '2026-05-02T00:00:00Z',
@@ -226,11 +218,10 @@ describe('sync snapshot round trip', () => {
     });
     const prefs = memPrefs();
     const result = await applySyncSnapshot(prefs, parseSyncSnapshot(json));
-    expect(result.threads.unresolved).toBe(1);
-    expect(result.threads.imported).toBe(0);
+    expect(result.annotations.imported).toBe(0);
   });
 
-  it('round-trips translateSettings and translateCache', async () => {
+  it('round-trips translateSettings and excludes local translateCache', async () => {
     const prefs = memPrefs();
     saveTranslateSettings(prefs, {
       ...DEFAULT_TRANSLATE_SETTINGS,
@@ -245,9 +236,6 @@ describe('sync snapshot round trip', () => {
       nextSentenceKey: 'Alt+N',
       prevSentenceKey: 'Alt+P',
     });
-    saveTranslateCacheState(prefs, {
-      entries: { k1: { text: '你好', model: 'gpt-5.4', createdAt: 1 } },
-    });
     const snap = await buildSyncSnapshot(prefs);
     const json = JSON.stringify(snap);
     const reparsed = parseSyncSnapshot(json);
@@ -260,7 +248,7 @@ describe('sync snapshot round trip', () => {
     expect(reparsed.translateSettings?.triggerMode).toBe('double');
     expect(reparsed.translateSettings?.nextSentenceKey).toBe('Alt+N');
     expect(reparsed.translateSettings?.prevSentenceKey).toBe('Alt+P');
-    expect(reparsed.translateCache?.entries.k1?.text).toBe('你好');
+    expect(reparsed).not.toHaveProperty('translateCache');
 
     const targetPrefs = memPrefs();
     await applySyncSnapshot(targetPrefs, reparsed);
@@ -289,6 +277,6 @@ describe('sync snapshot round trip', () => {
     });
     const snap = parseSyncSnapshot(json);
     expect(snap.translateSettings).toBeUndefined();
-    expect(snap.translateCache).toBeUndefined();
+    expect(snap).not.toHaveProperty('translateCache');
   });
 });
