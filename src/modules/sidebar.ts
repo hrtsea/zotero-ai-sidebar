@@ -71,6 +71,26 @@ import {
 } from "../ui/math";
 import { serializeSelectionAsMarkdown } from "../ui/selection-serialize";
 import { TranslateModeController } from "../translate/translate-mode";
+import {
+  captureNoteCaretSnapshot,
+  findActiveNoteEditor,
+  installZoteroNoteCaretMemory,
+  installZoteroNotePointerMemory,
+  noteAutoFocusSuppressed,
+  noteCaretSnapshotDebugInfo,
+  noteCaretSnapshotForSidebar,
+  noteEditorDebugRoots,
+  noteEditorScrollRoot,
+  noteElementDebugInfo,
+  notePointerSnapshotForSidebar,
+  noteScrollSnapshotDebugInfo,
+  restoreVisibleNoteScroll,
+  tryInsertHTMLAtCursor,
+  type NoteCaretSnapshot,
+  type NotePointerSnapshot,
+  type NoteScrollSnapshot,
+  type ZoteroNoteEditorElement,
+} from "./note-editor-restore";
 
 const translateControllers = new WeakMap<Window, TranslateModeController>();
 
@@ -83,9 +103,16 @@ const NOTE_ROOT_ID = "zai-note-root";
 const ROOT_ID = "zai-root";
 const TOGGLE_BUTTON_ID = "zai-toggle-button";
 const FLOATING_TOGGLE_ID = "zai-floating-toggle";
+const READER_LAYOUT_PREF_KEY = "extensions.zotero-ai-sidebar.readerLayout";
 const READER_TRANSLATE_GROUP_ID = "zai-reader-translate-group";
 const READER_TRANSLATE_STYLE_ID = "zai-reader-translate-style";
 const contextPolicy = DEFAULT_CONTEXT_POLICY;
+const DEFAULT_AI_COLUMN_WIDTH = 380;
+const DEFAULT_NOTE_COLUMN_WIDTH = 560;
+const MIN_AI_COLUMN_WIDTH = 320;
+const MIN_NOTE_COLUMN_WIDTH = 260;
+const MAX_AI_COLUMN_WIDTH = 760;
+const MAX_NOTE_COLUMN_WIDTH = 700;
 const IMAGE_PROMPT_MAX_DIMENSION = 2048;
 const SELECTION_CONTEXT_RADIUS_CHARS = 2500;
 const SELECTION_CONTEXT_QUERY_CHARS = 500;
@@ -130,17 +157,29 @@ interface WindowSidebarState {
   noteAutosaveTimer?: number;
   noteAutosavePromise?: Promise<void>;
   noteEditorCleanup?: () => void;
+  notePointerSnapshot?: NotePointerSnapshot;
+  noteCaretSnapshot?: NoteCaretSnapshot;
+  noteRestoreSnapshot?: NoteScrollSnapshot;
+  noteSuppressAutoFocusUntil?: number;
+  noteCaretUserMovedAt?: number;
   copyHandlerCleanup?: () => void;
   selectionMenuCleanup?: () => void;
   promptShortcutCleanup?: () => void;
   readerTranslateToolbarCleanup?: () => void;
   initialRefreshCleanup?: () => void;
+  layoutSaveTimer?: number;
+  layoutCleanup?: () => void;
   lastCopySelection?: { text: string; updatedAt: number };
   toggleButton?: Element;
   floatingButton?: HTMLElement;
   selectionMonitorID?: number;
   originalItemSelected?: (...args: unknown[]) => unknown;
   patchedItemSelected?: (...args: unknown[]) => unknown;
+}
+
+interface ReaderLayoutPrefs {
+  noteWidth?: number;
+  updatedAt?: number;
 }
 
 const windowSidebars = new WeakMap<Window, WindowSidebarState>();
@@ -553,12 +592,18 @@ function renderToolbar(doc: Document, mount: HTMLElement, state: PanelState) {
     topRow.append(clear);
   }
   const noteWindowOpen = isNoteWindowOpenForMount(mount);
-  const openNote = buttonEl(doc, noteWindowOpen ? "已打开" : "打开笔记");
+  const openNote = buttonEl(doc, noteWindowOpen ? "关闭笔记" : "打开笔记");
   openNote.className = "open-note-button";
-  openNote.title = "在当前 Zotero 窗口打开当前条目的子笔记";
-  openNote.disabled = state.itemID == null || noteWindowOpen;
+  openNote.title = noteWindowOpen
+    ? "关闭笔记列"
+    : "在当前 Zotero 窗口打开当前条目的子笔记";
+  openNote.disabled = state.itemID == null;
   openNote.addEventListener("click", () => {
-    void openCurrentItemNote(doc, state.itemID, openNote);
+    if (isNoteWindowOpenForMount(mount)) {
+      void closeCurrentNoteWindow(mount);
+    } else {
+      void openCurrentItemNote(doc, state.itemID, openNote);
+    }
   });
   bottomRow.append(openNote);
   bottomRow.append(settings);
@@ -1557,10 +1602,9 @@ async function jumpToPdfSelection(
   const activeReader = getActiveReader(win);
   const activeConversationID = win ? activeReaderConversationItemID(win) : null;
   const reader =
-    readerAttachmentID(activeReader) === locator.attachmentID ||
-    activeConversationID === state.itemID
+    readerAttachmentID(activeReader) === locator.attachmentID
       ? activeReader
-      : getActiveReaderForItem(win, state.itemID);
+      : getReaderForAttachmentOrItem(win, state.itemID, locator.attachmentID);
   if (!reader || typeof reader.navigate !== "function") {
     debugZai("task.pdf-selection.jump.unavailable", {
       attachmentID: locator.attachmentID,
@@ -1572,9 +1616,29 @@ async function jumpToPdfSelection(
   }
   try {
     await reader.navigate({ position: locator.position });
+    const restored = await restoreReaderTextSelectionAfterNavigate(
+      win,
+      reader,
+      locator,
+    );
+    if (restored) {
+      clearIgnoredSelectedTextForReader(
+        reader,
+        state.itemID,
+        locator.selectedText,
+      );
+      rememberReaderSelection(
+        reader,
+        state.itemID,
+        locator.selectedText,
+        restored,
+      );
+      updateSelectionIndicators(mount, state.itemID);
+    }
     debugZai("task.pdf-selection.jump", {
       attachmentID: locator.attachmentID,
       pageIndex: locator.pageIndex,
+      restoredSelection: !!restored,
       text: textDebugInfo(locator.selectedText, 120),
     });
   } catch (err) {
@@ -1583,6 +1647,244 @@ async function jumpToPdfSelection(
       attachmentID: locator.attachmentID,
     });
   }
+}
+
+function clearIgnoredSelectedTextForReader(
+  reader: unknown,
+  itemID: number | null,
+  text: string,
+) {
+  const normalized = normalizeSelectedText(text);
+  if (!normalized) return;
+  for (const id of readerItemIDs(reader, itemID)) {
+    if (ignoredSelectedTextByItem.get(id) === normalized) {
+      ignoredSelectedTextByItem.delete(id);
+    }
+  }
+}
+
+async function restoreReaderTextSelectionAfterNavigate(
+  win: Window | null | undefined,
+  reader: unknown,
+  locator: PdfSelectionLocator,
+): Promise<Record<string, unknown> | null> {
+  for (const delayMs of [0, 80, 240, 600, 1200]) {
+    if (delayMs > 0) await sleepInWindow(win, delayMs);
+    const restored = restoreReaderTextSelection(reader, locator);
+    if (restored) return restored;
+  }
+  return null;
+}
+
+function sleepInWindow(
+  win: Window | null | undefined,
+  delayMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (win?.setTimeout) win.setTimeout(resolve, delayMs);
+    else setTimeout(resolve, delayMs);
+  });
+}
+
+function restoreReaderTextSelection(
+  reader: unknown,
+  locator: PdfSelectionLocator,
+): Record<string, unknown> | null {
+  for (const view of activeReaderViews(reader as any)) {
+    const ranges = selectionRangesFromLocator(view, locator);
+    if (!ranges.length || typeof view?._setSelectionRanges !== "function") {
+      continue;
+    }
+    try {
+      const scopedRanges = clonePlainForScope(ranges, view?._iframeWindow);
+      view._setSelectionRanges(scopedRanges);
+      view._render?.();
+      view._scrollSelectionHeadIntoView?.(scopedRanges);
+      return (
+        selectionAnnotationFromView(view, scopedRanges, locator) ??
+        selectionAnnotationFromRanges(scopedRanges, locator)
+      );
+    } catch (err) {
+      debugZai("task.pdf-selection.restore.failed", {
+        error: errorMessage(err),
+        attachmentID: locator.attachmentID,
+        pageIndex: locator.pageIndex,
+      });
+    }
+  }
+  return null;
+}
+
+function selectionRangesFromLocator(
+  view: any,
+  locator: PdfSelectionLocator,
+): Array<Record<string, unknown>> {
+  const position = locator.position as { pageIndex?: unknown; rects?: unknown };
+  const pageIndex = finiteNumber(position.pageIndex);
+  const rects = pdfRects(position.rects);
+  if (pageIndex == null || rects.length === 0) return [];
+
+  const page = readerPageForIndex(view, pageIndex);
+  const chars = Array.isArray(page?.chars) ? page.chars : [];
+  if (!chars.length) return [];
+
+  const offsets = charOffsetsForPdfRects(chars, rects);
+  if (!offsets) return [];
+  const [anchorOffset, headOffset] = offsets;
+  const range = {
+    pageIndex,
+    anchorOffset,
+    headOffset,
+    anchor: true,
+    head: true,
+    collapsed: anchorOffset === headOffset,
+    text:
+      locator.selectedText ||
+      textFromReaderChars(chars.slice(anchorOffset, headOffset)),
+    sortIndex: selectionSortIndex(
+      pageIndex,
+      anchorOffset,
+      rects,
+      page?.viewBox,
+    ),
+    position: { pageIndex, rects },
+  };
+  return range.collapsed ? [] : [range];
+}
+
+function selectionAnnotationFromView(
+  view: any,
+  ranges: Array<Record<string, unknown>>,
+  locator: PdfSelectionLocator,
+): Record<string, unknown> | null {
+  if (typeof view?._getAnnotationFromSelectionRanges !== "function") {
+    return null;
+  }
+  try {
+    const annotation = view._getAnnotationFromSelectionRanges(
+      ranges,
+      "highlight",
+    );
+    if (!annotation || typeof annotation !== "object") return null;
+    return {
+      ...clonePlainForScope(annotation),
+      text: locator.selectedText,
+      pageLabel: locator.pageLabel ?? (annotation as any).pageLabel,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function selectionAnnotationFromRanges(
+  ranges: Array<Record<string, unknown>>,
+  locator: PdfSelectionLocator,
+): Record<string, unknown> | null {
+  const first = ranges[0];
+  const position = first?.position;
+  if (!position || typeof position !== "object") return null;
+  return {
+    type: "highlight",
+    text: locator.selectedText,
+    pageLabel: locator.pageLabel,
+    sortIndex: typeof first.sortIndex === "string" ? first.sortIndex : "",
+    position,
+  };
+}
+
+function readerPageForIndex(view: any, pageIndex: number): any {
+  const pages = view?._pdfPages;
+  return Array.isArray(pages) ? pages[pageIndex] : pages?.[String(pageIndex)];
+}
+
+type PdfRectTuple = [number, number, number, number];
+
+function pdfRects(value: unknown): PdfRectTuple[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!Array.isArray(entry) || entry.length < 4) return null;
+      const rect = entry.slice(0, 4).map(finiteNumber);
+      return rect.every((coord) => coord != null)
+        ? (rect as PdfRectTuple)
+        : null;
+    })
+    .filter((rect): rect is PdfRectTuple => !!rect);
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function charOffsetsForPdfRects(
+  chars: any[],
+  rects: PdfRectTuple[],
+): [number, number] | null {
+  let start = Infinity;
+  let end = -1;
+  chars.forEach((char, index) => {
+    const rect = pdfRectFromChar(char);
+    if (
+      !rect ||
+      !rects.some((selectionRect) => pdfRectCenterInside(rect, selectionRect))
+    ) {
+      return;
+    }
+    start = Math.min(start, index);
+    end = Math.max(end, index + 1);
+  });
+  return Number.isFinite(start) && end > start ? [start, end] : null;
+}
+
+function pdfRectFromChar(char: any): PdfRectTuple | null {
+  return pdfRects([char?.rect])[0] ?? null;
+}
+
+function pdfRectCenterInside(
+  rect: PdfRectTuple,
+  target: PdfRectTuple,
+): boolean {
+  const x = (rect[0] + rect[2]) / 2;
+  const y = (rect[1] + rect[3]) / 2;
+  return (
+    x >= Math.min(target[0], target[2]) &&
+    x <= Math.max(target[0], target[2]) &&
+    y >= Math.min(target[1], target[3]) &&
+    y <= Math.max(target[1], target[3])
+  );
+}
+
+function selectionSortIndex(
+  pageIndex: number,
+  offset: number,
+  rects: PdfRectTuple[],
+  viewBox: unknown,
+): string {
+  const topRect = rects[0] ?? [0, 0, 0, 0];
+  const box = pdfRects([viewBox])[0];
+  const pageHeight = box ? box[3] - box[1] : 0;
+  const top = pageHeight > 0 ? Math.max(0, pageHeight - topRect[3]) : 0;
+  return [
+    String(Math.max(0, pageIndex)).padStart(5, "0"),
+    String(Math.max(0, offset)).padStart(6, "0"),
+    String(Math.max(0, Math.floor(top))).padStart(5, "0"),
+  ].join("|");
+}
+
+function clonePlainForScope<T>(value: T, targetScope?: unknown): T {
+  const plain = JSON.parse(JSON.stringify(value)) as T;
+  try {
+    const cloneInto = (globalThis as any).Components?.utils?.cloneInto;
+    if (targetScope && typeof cloneInto === "function") {
+      return cloneInto(plain, targetScope, {
+        wrapReflectors: true,
+        cloneFunctions: true,
+      }) as T;
+    }
+  } catch {
+    // Fall through to the plain object clone.
+  }
+  return plain;
 }
 
 function fullTextHighlightDisabledReason(
@@ -3409,12 +3711,24 @@ async function streamAssistant(
       // the visible note panel after the write so the user sees the
       // append immediately, matching the manual button's UX.
       appendToChildNote: async (content) => {
+        const noteScroll = captureVisibleNoteScrollForDocument(
+          mount.ownerDocument!,
+        );
+        armVisibleNoteRestoreForDocument(
+          mount.ownerDocument!,
+          noteScroll,
+          "tool-write:before-insert",
+        );
         const result = await appendAssistantContentToItemNote(
           mount.ownerDocument!,
           state.itemID,
           content,
         );
-        refreshVisibleNoteWindow(mount.ownerDocument!, result.noteID);
+        refreshVisibleNoteWindow(
+          mount.ownerDocument!,
+          result.noteID,
+          noteScroll,
+        );
         return result;
       },
     });
@@ -5109,7 +5423,13 @@ function bubble(
       state.itemID == null ||
       (state.sending && state.activeAssistantIndex === index);
     saveNote.addEventListener("click", () => {
-      void writeAssistantMessageToNote(doc, state.itemID, message, saveNote);
+      void writeAssistantMessageToNote(
+        doc,
+        state.itemID,
+        message,
+        saveNote,
+        pdfSelectionForAssistantMessage(state, index),
+      );
     });
     actions.append(saveNote);
   }
@@ -5150,7 +5470,7 @@ function bubble(
       ? state.messages[findPreviousUserIndex(state.messages, index)]
       : undefined;
   if (message.role === "assistant") {
-    renderAssistantProcess(doc, root, sourceUser);
+    renderAssistantProcess(doc, mount, state, root, sourceUser);
   }
   const progress = assistantProgressFor(state, index, message);
   if (progress) {
@@ -5180,6 +5500,16 @@ function bubble(
     );
   }
   return root;
+}
+
+function pdfSelectionForAssistantMessage(
+  state: PanelState,
+  assistantIndex: number,
+): PdfSelectionLocator | null {
+  const userIndex = findPreviousUserIndex(state.messages, assistantIndex);
+  return userIndex >= 0
+    ? state.messages[userIndex]?.task?.pdfSelection ?? null
+    : null;
 }
 
 async function openCurrentItemNote(
@@ -5281,6 +5611,7 @@ function renderNoteWindow(sidebar: WindowSidebarState, note: Zotero.Item) {
     return;
   }
 
+  sidebar.noteRestoreSnapshot = undefined;
   const editor = doc.createElementNS(XHTML_NS, "div") as HTMLElement;
   editor.className = "zai-note-rich-editor";
   editor.contentEditable = "true";
@@ -5321,18 +5652,6 @@ function renderNoteWindow(sidebar: WindowSidebarState, note: Zotero.Item) {
   sidebar.noteMount.append(head, body);
 }
 
-interface ZoteroNoteEditorElement extends Element {
-  mode?: string;
-  viewMode?: string;
-  item?: Zotero.Item;
-  notitle?: boolean;
-  focus?: () => Promise<void>;
-  saveSync?: () => void;
-  destroy?: () => void;
-  getCurrentInstance?: () => { _iframeWindow?: Window } | null;
-  _id?: (id: string) => Element | null;
-}
-
 function createZoteroNoteEditorElement(
   doc: Document,
 ): ZoteroNoteEditorElement | null {
@@ -5365,8 +5684,12 @@ function initializeZoteroNoteEditor(
   editor.notitle = true;
   editor.mode = "edit";
   editor.viewMode = "library";
-  editor.item = note;
   hideZoteroNoteEditorLinks(editor);
+  installZoteroNoteRestoreHooks(sidebar, editor, status, saveButton);
+  // Set item after a tick so the custom element has finished connecting.
+  win?.setTimeout(() => {
+    editor.item = note;
+  }, 0);
 
   const saveNow = () => {
     saveZoteroNoteEditor(editor, status, saveButton);
@@ -5378,6 +5701,7 @@ function initializeZoteroNoteEditor(
     event.stopPropagation();
   };
   const refocusEditor = () => {
+    if (noteAutoFocusSuppressed(sidebar)) return;
     void focusZoteroNoteEditor(editor);
   };
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -5400,9 +5724,28 @@ function initializeZoteroNoteEditor(
     hideZoteroNoteEditorLinks(editor);
     const instance = editor.getCurrentInstance?.();
     if (instance?._iframeWindow) {
+      // item setter can reset mode; force edit mode once the iframe is ready.
+      editor.mode = "edit";
       installZoteroNoteEditorKeySave(editor, status, saveButton);
       ensureZoteroNoteEditorKatexCSS(editor);
-      void focusZoteroNoteEditor(editor);
+      installZoteroNotePdfJumpLinks(sidebar, editor);
+      installZoteroNotePointerMemory(sidebar, editor);
+      installZoteroNoteCaretMemory(sidebar, editor);
+      const pendingRestore = sidebar.noteRestoreSnapshot;
+      if (pendingRestore) {
+        sidebar.noteRestoreSnapshot = undefined;
+        restoreVisibleNoteScroll(sidebar, pendingRestore, "afterInit");
+      }
+      if (pendingRestore || noteAutoFocusSuppressed(sidebar)) {
+        if (pendingRestore) {
+          win?.setTimeout(
+            () => restoreVisibleNoteScroll(sidebar, pendingRestore, "afterNoFocus"),
+            0,
+          );
+        }
+      } else {
+        void focusZoteroNoteEditor(editor);
+      }
       return;
     }
     if (attempt >= 80 || !win) return;
@@ -5419,7 +5762,82 @@ function initializeZoteroNoteEditor(
     editor.removeEventListener("pointerdown", stopBubble);
     editor.removeEventListener("click", stopBubble);
     editor.removeEventListener("keydown", handleKeyDown);
+    editor._zaiPdfJumpCleanup?.();
+    editor._zaiPdfJumpCleanup = undefined;
+    editor._zaiPointerMemoryCleanup?.();
+    editor._zaiPointerMemoryCleanup = undefined;
+    editor._zaiCaretMemoryCleanup?.();
+    editor._zaiCaretMemoryCleanup = undefined;
+    editor._zaiRestoreHookCleanup?.();
+    editor._zaiRestoreHookCleanup = undefined;
     editor.destroy?.();
+  };
+}
+
+function installZoteroNoteRestoreHooks(
+  sidebar: WindowSidebarState,
+  editor: ZoteroNoteEditorElement,
+  status: HTMLElement,
+  saveButton: HTMLButtonElement,
+) {
+  if (editor._zaiRestoreHookCleanup || typeof editor.initEditor !== "function") {
+    return;
+  }
+
+  const originalInitEditor = editor.initEditor;
+  let initCount = 0;
+  const wrappedInitEditor = (...args: unknown[]) => {
+    const seq = ++initCount;
+    debugZai("note-restore.initEditor:start", {
+      seq,
+      noteID: sidebar.noteItemID,
+      hasPendingRestore: !!sidebar.noteRestoreSnapshot,
+    });
+    const afterInit = () => {
+      installZoteroNoteEditorKeySave(editor, status, saveButton);
+      ensureZoteroNoteEditorKatexCSS(editor);
+      installZoteroNotePdfJumpLinks(sidebar, editor);
+      installZoteroNotePointerMemory(sidebar, editor);
+      installZoteroNoteCaretMemory(sidebar, editor);
+      const pendingRestore = sidebar.noteRestoreSnapshot;
+      debugZai("note-restore.initEditor:done", {
+        seq,
+        noteID: sidebar.noteItemID,
+        hasPendingRestore: !!pendingRestore,
+        snapshot: pendingRestore
+          ? noteScrollSnapshotDebugInfo(pendingRestore)
+          : null,
+        roots: noteEditorDebugRoots(editor),
+      });
+      if (pendingRestore) {
+        restoreVisibleNoteScroll(sidebar, pendingRestore, `initEditor#${seq}`);
+      }
+    };
+
+    try {
+      const result = originalInitEditor(...args);
+      if (result && typeof (result as Promise<void>).then === "function") {
+        return (result as Promise<void>).then((value) => {
+          afterInit();
+          return value;
+        });
+      }
+      afterInit();
+      return result;
+    } catch (err) {
+      debugZai("note-restore.initEditor:failed", {
+        seq,
+        error: errorMessage(err),
+      });
+      throw err;
+    }
+  };
+
+  editor.initEditor = wrappedInitEditor;
+  editor._zaiRestoreHookCleanup = () => {
+    if (editor.initEditor === wrappedInitEditor) {
+      editor.initEditor = originalInitEditor;
+    }
   };
 }
 
@@ -5473,6 +5891,94 @@ function installZoteroNoteEditorKeySave(
   };
   iframeWindow.addEventListener("keydown", saveOnKeyDown, true);
   (editor as Element).setAttribute("data-zai-save-key", "true");
+}
+
+function installZoteroNotePdfJumpLinks(
+  sidebar: WindowSidebarState,
+  editor: ZoteroNoteEditorElement,
+) {
+  const iframeWindow = editor.getCurrentInstance?.()?._iframeWindow;
+  if (!iframeWindow || editor._zaiPdfJumpCleanup) return;
+  const onClick = (event: MouseEvent) => {
+    const link = closestNoteElement(
+      event.target as Node | null,
+      "a",
+    ) as HTMLAnchorElement | null;
+    const locator = link ? pdfSelectionFromNoteLink(link) : null;
+    if (!locator) return;
+    const state = states.get(sidebar.mount);
+    if (!state) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void jumpToPdfSelection(sidebar.mount, state, locator);
+  };
+  iframeWindow.addEventListener("click", onClick, true);
+  editor._zaiPdfJumpCleanup = () => {
+    iframeWindow.removeEventListener("click", onClick, true);
+  };
+}
+
+function closestNoteElement(
+  node: Node | null,
+  selector: string,
+): Element | null {
+  const start =
+    node && node.nodeType === 1
+      ? (node as Element)
+      : ((node as { parentElement?: Element | null } | null)?.parentElement ??
+        null);
+  return typeof start?.closest === "function" ? start.closest(selector) : null;
+}
+
+function pdfSelectionFromNoteLink(
+  link: HTMLAnchorElement,
+): PdfSelectionLocator | null {
+  const raw =
+    link.getAttribute("data-zai-pdf-selection") ??
+    pdfSelectionJSONFromNoteHref(link.href);
+  if (!raw) return null;
+  try {
+    return normalizePdfSelectionLocatorForNote(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function pdfSelectionJSONFromNoteHref(href: string): string {
+  const marker = "#zaiSelection=";
+  const index = href.indexOf(marker);
+  if (index < 0) return "";
+  const encoded = href.slice(index + marker.length);
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return "";
+  }
+}
+
+function normalizePdfSelectionLocatorForNote(
+  value: unknown,
+): PdfSelectionLocator | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const locator = value as Record<string, unknown>;
+  const attachmentID = finiteNumber(locator.attachmentID);
+  const selectedText =
+    typeof locator.selectedText === "string" ? locator.selectedText : "";
+  const position =
+    locator.position && typeof locator.position === "object"
+      ? clonePlainRecord(locator.position)
+      : null;
+  if (attachmentID == null || !selectedText || !position) return null;
+  const pageIndex = finiteNumber(locator.pageIndex);
+  const pageLabel =
+    typeof locator.pageLabel === "string" ? locator.pageLabel : undefined;
+  return {
+    attachmentID,
+    selectedText,
+    ...(pageIndex != null ? { pageIndex } : {}),
+    ...(pageLabel ? { pageLabel } : {}),
+    position,
+  };
 }
 
 function ensureAllZoteroNoteEditorKatexCSS(doc: Document): void {
@@ -5532,6 +6038,23 @@ function ensureKatexCSSInDocument(doc: Document): void {
   display: block;
   text-align: center;
   white-space: nowrap;
+}
+.zai-note-pdf-jump {
+  margin: 0.35em 0 0.8em;
+}
+.zai-note-pdf-selection-link {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid #c7dfe8;
+  border-radius: 999px;
+  color: #2d6f8f;
+  font-size: 0.9em;
+  font-weight: 700;
+  text-decoration: none;
+}
+.zai-note-pdf-selection-link:hover {
+  border-color: #2d6f8f;
+  text-decoration: none;
 }
 `;
     root.append(style);
@@ -5885,7 +6408,18 @@ function findSidebarStateByMount(mount: HTMLElement): WindowSidebarState | null 
 }
 
 function isNoteWindowOpenForMount(mount: HTMLElement): boolean {
-  return !!findSidebarStateByMount(mount)?.noteItemID;
+  const sidebar = findSidebarStateByMount(mount);
+  if (!sidebar?.noteItemID) return false;
+  // Auto-repair: if the note column is hidden/collapsed (e.g. user dragged the
+  // splitter closed instead of clicking the Close button), clear the stale state.
+  const col = sidebar.noteColumn as Element & { hidden?: boolean; collapsed?: boolean };
+  if (col.hidden || col.collapsed || col.getAttribute("hidden") === "true" || col.getAttribute("collapsed") === "true") {
+    sidebar.noteItemID = undefined;
+    sidebar.noteEditorCleanup?.();
+    sidebar.noteEditorCleanup = undefined;
+    return false;
+  }
+  return true;
 }
 
 function updateOpenNoteButton(state: WindowSidebarState) {
@@ -5894,8 +6428,28 @@ function updateOpenNoteButton(state: WindowSidebarState) {
   ) as HTMLButtonElement | null;
   if (!button) return;
   const opened = !!state.noteItemID;
-  button.textContent = opened ? "已打开" : "打开笔记";
-  button.disabled = opened;
+  button.textContent = opened ? "关闭笔记" : "打开笔记";
+  button.title = opened ? "关闭笔记列" : "在当前 Zotero 窗口打开当前条目的子笔记";
+  button.disabled = false;
+}
+
+function closeCurrentNoteWindow(mount: HTMLElement): void {
+  const sidebar = findSidebarStateByMount(mount);
+  if (!sidebar?.noteItemID) return;
+  const editor = findActiveNoteEditor(sidebar);
+  const closeBtn = sidebar.noteMount.querySelector(
+    ".zai-note-window-button:last-of-type",
+  ) as HTMLButtonElement | null;
+  if (editor && closeBtn) {
+    closeZoteroNoteWindow(sidebar, editor, closeBtn);
+  } else {
+    sidebar.noteItemID = undefined;
+    sidebar.noteEditorCleanup?.();
+    sidebar.noteEditorCleanup = undefined;
+    sidebar.noteMount.replaceChildren();
+    setNoteColumnVisible(sidebar, false);
+    updateOpenNoteButton(sidebar);
+  }
 }
 
 function setNoteColumnVisible(state: WindowSidebarState, visible: boolean) {
@@ -5904,6 +6458,9 @@ function setNoteColumnVisible(state: WindowSidebarState, visible: boolean) {
     collapsed?: boolean;
   };
   const noteSplitter = state.noteSplitter as Element & { hidden?: boolean };
+  if (!visible) {
+    rememberLastNoteWidth(state);
+  }
   noteColumn.hidden = !visible;
   noteSplitter.hidden = !visible;
   if (visible) {
@@ -5911,9 +6468,7 @@ function setNoteColumnVisible(state: WindowSidebarState, visible: boolean) {
     state.noteColumn.removeAttribute("collapsed");
     state.noteColumn.removeAttribute("hidden");
     state.noteSplitter.removeAttribute("hidden");
-    if (!state.noteColumn.getAttribute("width")) {
-      state.noteColumn.setAttribute("width", "360");
-    }
+    applyLastNoteWidth(state);
     return;
   }
   noteColumn.collapsed = true;
@@ -5928,11 +6483,99 @@ function noteTitle(note: Zotero.Item): string {
   return title || `Zotero 笔记 #${note.id}`;
 }
 
-function refreshVisibleNoteWindow(doc: Document, noteID: number) {
+function refreshVisibleNoteWindow(
+  doc: Document,
+  noteID: number,
+  scrollSnapshot: NoteScrollSnapshot | null = null,
+) {
   const sidebar = findSidebarStateByDocument(doc);
   if (sidebar?.noteItemID !== noteID) return;
   const note = getZoteroItem(noteID);
-  if (isZoteroNote(note)) renderNoteWindow(sidebar, note);
+  if (!isZoteroNote(note)) return;
+  const scroll = scrollSnapshot ?? captureVisibleNoteScroll(sidebar);
+  sidebar.noteRestoreSnapshot = scroll ?? undefined;
+  debugZai("note-restore.refresh-render", {
+    noteID,
+    snapshot: scroll ? noteScrollSnapshotDebugInfo(scroll) : null,
+    rootsBefore: noteEditorDebugRoots(findActiveNoteEditor(sidebar)),
+  });
+  renderNoteWindow(sidebar, note);
+  restoreVisibleNoteScroll(sidebar, scroll, "refreshVisibleNoteWindow");
+}
+
+function captureVisibleNoteScrollForDocument(
+  doc: Document,
+): NoteScrollSnapshot | null {
+  const sidebar = findSidebarStateByDocument(doc);
+  return sidebar ? captureVisibleNoteScroll(sidebar) : null;
+}
+
+function armVisibleNoteRestoreForDocument(
+  doc: Document,
+  snapshot: NoteScrollSnapshot | null,
+  reason: string,
+): void {
+  const sidebar = findSidebarStateByDocument(doc);
+  if (!sidebar || !snapshot) {
+    debugZai("note-restore.arm-skipped", { reason, hasSnapshot: !!snapshot });
+    return;
+  }
+  sidebar.noteRestoreSnapshot = snapshot;
+  sidebar.noteSuppressAutoFocusUntil = Date.now() + 3000;
+  debugZai("note-restore.arm", {
+    reason,
+    noteID: sidebar.noteItemID,
+    suppressAutoFocusUntil: sidebar.noteSuppressAutoFocusUntil,
+    snapshot: noteScrollSnapshotDebugInfo(snapshot),
+    roots: noteEditorDebugRoots(findActiveNoteEditor(sidebar)),
+  });
+}
+
+function captureVisibleNoteScroll(
+  sidebar: WindowSidebarState,
+): NoteScrollSnapshot | null {
+  const editor = findActiveNoteEditor(sidebar);
+  const iframeWin = editor?.getCurrentInstance?.()?._iframeWindow;
+  const scrollRoot = noteEditorScrollRoot(editor);
+  const pointer = notePointerSnapshotForSidebar(sidebar);
+  const caret =
+    (editor ? captureNoteCaretSnapshot(editor, sidebar.noteItemID) : null) ??
+    noteCaretSnapshotForSidebar(sidebar);
+  if (scrollRoot) {
+    const snapshot = {
+      top: scrollRoot.scrollTop,
+      left: scrollRoot.scrollLeft,
+      windowX: iframeWin?.scrollX,
+      windowY: iframeWin?.scrollY,
+      ...(pointer ? { pointer } : {}),
+      ...(caret ? { caret } : {}),
+    };
+    debugZai("note-restore.capture", {
+      noteID: sidebar.noteItemID,
+      snapshot: noteScrollSnapshotDebugInfo(snapshot),
+      root: noteElementDebugInfo(scrollRoot),
+      roots: noteEditorDebugRoots(editor),
+    });
+    return snapshot;
+  }
+  const fallback = sidebar.noteMount.querySelector(
+    ".zai-note-rich-editor",
+  ) as HTMLElement | null;
+  const snapshot = fallback
+    ? {
+        top: fallback.scrollTop,
+        left: fallback.scrollLeft,
+        ...(pointer ? { pointer } : {}),
+        ...(caret ? { caret } : {}),
+      }
+    : null;
+  debugZai("note-restore.capture", {
+    noteID: sidebar.noteItemID,
+    snapshot: snapshot ? noteScrollSnapshotDebugInfo(snapshot) : null,
+    fallback: fallback ? noteElementDebugInfo(fallback) : null,
+    roots: noteEditorDebugRoots(editor),
+  });
+  return snapshot;
 }
 
 function appendSanitizedNoteChildren(
@@ -6040,6 +6683,7 @@ async function writeAssistantMessageToNote(
   itemID: number | null,
   message: Message,
   button: HTMLButtonElement,
+  pdfSelection: PdfSelectionLocator | null = null,
 ) {
   const originalText = button.textContent || "写入笔记";
   const originalTitle = button.title;
@@ -6047,10 +6691,17 @@ async function writeAssistantMessageToNote(
   button.disabled = true;
 
   try {
+    const noteScroll = captureVisibleNoteScrollForDocument(doc);
+    armVisibleNoteRestoreForDocument(
+      doc,
+      noteScroll,
+      "button-write:before-insert",
+    );
     const result = await appendAssistantContentToItemNote(
       doc,
       itemID,
       message.content,
+      pdfSelection,
     );
     button.textContent = result.usedBetterNotes
       ? "已写入 BN"
@@ -6058,7 +6709,7 @@ async function writeAssistantMessageToNote(
         ? "已新建笔记"
         : "已写入";
     button.title = `目标笔记 #${result.noteID}`;
-    refreshVisibleNoteWindow(doc, result.noteID);
+    refreshVisibleNoteWindow(doc, result.noteID, noteScroll);
   } catch (err) {
     button.textContent = "写入失败";
     button.title = err instanceof Error ? err.message : String(err);
@@ -6075,10 +6726,11 @@ async function appendAssistantContentToItemNote(
   doc: Document,
   itemID: number | null,
   content: string,
+  pdfSelection: PdfSelectionLocator | null = null,
 ): Promise<{ noteID: number; created: boolean; usedBetterNotes: boolean }> {
   if (itemID == null) throw new Error("未选择 Zotero 条目");
   const target = await resolveTargetNote(itemID);
-  const html = assistantContentToNoteHTML(doc, content);
+  const html = assistantContentToNoteHTML(doc, content, pdfSelection);
   const usedBetterNotes = await insertHTMLIntoNote(target.note, html);
   return {
     noteID: target.note.id,
@@ -6095,6 +6747,12 @@ async function resolveTargetNote(
   if (!item) throw new Error(`找不到 Zotero 条目 #${itemID}`);
   if (isZoteroNote(item)) return { note: item, created: false };
 
+  // Standalone PDFs have no parent item. Auto-create a parent so both the
+  // PDF and the note end up as children of the same Zotero item.
+  if (isStandaloneAttachment(item)) {
+    return resolveStandaloneAttachmentNote(item);
+  }
+
   const parent = parentItemForNotes(item);
   const existing = childNotesForItem(parent)[0];
   if (existing) return { note: existing, created: false };
@@ -6105,6 +6763,92 @@ async function resolveTargetNote(
 function getZoteroItem(itemID: number): Zotero.Item | null {
   const item = Zotero.Items.get(itemID) as Zotero.Item | false | undefined;
   return item || null;
+}
+
+function isStandaloneAttachment(item: Zotero.Item): boolean {
+  const i = item as Zotero.Item & { isAttachment?: () => boolean; parentID?: number };
+  return !!(i.isAttachment?.() && !i.parentID);
+}
+
+async function resolveStandaloneAttachmentNote(
+  pdf: Zotero.Item,
+): Promise<{ note: Zotero.Item; created: boolean }> {
+  // Create a parent item and reparent the PDF under it so both the PDF and
+  // the note end up as children of the same Zotero item.
+  const parent = await createParentForStandalonePDF(pdf);
+  const note = await createChildNote(parent);
+  return { note, created: true };
+}
+
+async function createParentForStandalonePDF(pdf: Zotero.Item): Promise<Zotero.Item> {
+  const ZItem = (Zotero as unknown as { Item: new (type: string) => any }).Item;
+  const parent = new ZItem("document") as Zotero.Item;
+  parent.libraryID = pdf.libraryID;
+  const title =
+    (pdf as any).getField?.("title") ||
+    (pdf as any).getDisplayTitle?.() ||
+    "";
+  if (title) (parent as any).setField?.("title", title);
+  const collectionIDs = (pdf as any).getCollections?.() as number[] | undefined;
+  if (collectionIDs?.length) (parent as any).setCollections?.(collectionIDs);
+  await parent.saveTx();
+
+  // Move the PDF under the new parent.
+  (pdf as any).parentID = parent.id;
+  await pdf.saveTx();
+
+  return parent;
+}
+
+// Walk the item's dc:relation URIs looking for a note item.
+async function findRelatedNote(item: Zotero.Item): Promise<Zotero.Item | null> {
+  const relations = (item as any).getRelations?.() as
+    | Record<string, string | string[]>
+    | undefined;
+  if (!relations) return null;
+
+  const raw = relations["dc:relation"];
+  const uris: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
+
+  for (const uri of uris) {
+    try {
+      const related = await (Zotero as any).URI.getURIItem(uri);
+      if (related && isZoteroNote(related)) return related as Zotero.Item;
+    } catch {
+      // ignore stale or malformed URIs
+    }
+  }
+  return null;
+}
+
+// Add a mutual dc:relation between two items (Zotero's official relation API).
+async function linkItemsViaRelation(a: Zotero.Item, b: Zotero.Item): Promise<void> {
+  try {
+    const uriA = (Zotero as any).URI.getItemURI(a) as string;
+    const uriB = (Zotero as any).URI.getItemURI(b) as string;
+    (a as any).addRelation("dc:relation", uriB);
+    await a.saveTx();
+    (b as any).addRelation("dc:relation", uriA);
+    await b.saveTx();
+  } catch (err) {
+    debugZai("standalone-note:link-relation-failed", { err: String(err) });
+  }
+}
+
+async function createStandaloneNote(pdf: Zotero.Item): Promise<Zotero.Item> {
+  const note = new (Zotero as unknown as { Item: new (type: string) => any }).Item(
+    "note",
+  ) as Zotero.Item;
+  note.libraryID = pdf.libraryID;
+  const title = (pdf as any).getField?.("title") || (pdf as any).getDisplayTitle?.() || "";
+  note.setNote(`<p>AI 笔记${title ? ` — ${title}` : ""}</p>`);
+  // Place the note in the same collections as the PDF so it stays visible alongside it.
+  const collectionIDs = (pdf as any).getCollections?.() as number[] | undefined;
+  if (collectionIDs && collectionIDs.length > 0) {
+    (note as any).setCollections?.(collectionIDs);
+  }
+  await note.saveTx();
+  return note;
 }
 
 function parentItemForNotes(item: Zotero.Item): Zotero.Item {
@@ -6149,13 +6893,20 @@ async function createChildNote(parent: Zotero.Item): Promise<Zotero.Item> {
   return note;
 }
 
-function assistantContentToNoteHTML(doc: Document, content: string): string {
+function assistantContentToNoteHTML(
+  doc: Document,
+  content: string,
+  pdfSelection: PdfSelectionLocator | null = null,
+): string {
   const root = doc.createElement("div");
   root.append(doc.createElement("hr"));
 
   const title = doc.createElement("h2");
   title.textContent = `AI 总结 ${formatNoteTimestamp(new Date())}`;
   root.append(title);
+
+  const jump = renderNotePdfSelectionJump(doc, pdfSelection);
+  if (jump) root.append(jump);
 
   const body = doc.createElement("div");
   // Notes path: keep $..$ / $$..$$ as plain text. Zotero's note editor
@@ -6167,6 +6918,75 @@ function assistantContentToNoteHTML(doc: Document, content: string): string {
   renderMarkdownInto(body, content.trim(), "source");
   while (body.firstChild) root.appendChild(body.firstChild);
   return String(root.innerHTML);
+}
+
+function renderNotePdfSelectionJump(
+  doc: Document,
+  pdfSelection: PdfSelectionLocator | null,
+): HTMLElement | null {
+  if (!pdfSelection) return null;
+  const href = pdfOpenUrlForSelection(pdfSelection);
+  if (!href) return null;
+
+  const row = doc.createElement("p");
+  row.className = "zai-note-pdf-jump";
+  const link = doc.createElement("a");
+  link.className = "zai-note-pdf-selection-link";
+  link.href = `${href}#zaiSelection=${encodePdfSelectionForNoteLink(
+    pdfSelection,
+  )}`;
+  link.textContent = `↗ 查看 PDF 原选区${pdfSelectionPageLabel(pdfSelection)}`;
+  link.title = previewSelection(pdfSelection.selectedText);
+  link.setAttribute(
+    "data-zai-pdf-selection",
+    JSON.stringify(pdfSelectionForNoteData(pdfSelection)),
+  );
+  row.append(link);
+  return row;
+}
+
+function encodePdfSelectionForNoteLink(selection: PdfSelectionLocator): string {
+  return encodeURIComponent(JSON.stringify(pdfSelectionForNoteData(selection)));
+}
+
+function pdfSelectionForNoteData(
+  selection: PdfSelectionLocator,
+): PdfSelectionLocator {
+  return {
+    attachmentID: selection.attachmentID,
+    selectedText: selection.selectedText,
+    ...(selection.pageIndex != null ? { pageIndex: selection.pageIndex } : {}),
+    ...(selection.pageLabel ? { pageLabel: selection.pageLabel } : {}),
+    position: clonePlainRecord(selection.position) ?? selection.position,
+  };
+}
+
+function pdfSelectionPageLabel(selection: PdfSelectionLocator): string {
+  const label = selection.pageLabel ?? String((selection.pageIndex ?? 0) + 1);
+  return label ? `（第 ${label} 页）` : "";
+}
+
+function pdfOpenUrlForSelection(selection: PdfSelectionLocator): string {
+  const attachment = getZoteroItem(selection.attachmentID);
+  const key = (attachment as any)?.key;
+  if (!attachment || !key) return "";
+
+  const page = encodeURIComponent(
+    String(selection.pageIndex != null ? selection.pageIndex + 1 : 1),
+  );
+  const itemURI =
+    typeof (Zotero as any).URI?.getItemURI === "function"
+      ? String((Zotero as any).URI.getItemURI(attachment))
+      : "";
+  const group = itemURI.match(/\/groups\/(\d+)\/items\/[^/?#]+/);
+  if (group) {
+    return `zotero://open-pdf/groups/${encodeURIComponent(
+      group[1]!,
+    )}/items/${encodeURIComponent(key)}?page=${page}`;
+  }
+  return `zotero://open-pdf/library/items/${encodeURIComponent(
+    key,
+  )}?page=${page}`;
 }
 
 async function insertHTMLIntoNote(
@@ -6630,6 +7450,8 @@ function refreshAnnotationSuggestion(
 // that triggered the answer.
 function renderAssistantProcess(
   doc: Document,
+  mount: HTMLElement,
+  state: PanelState,
   root: HTMLElement,
   sourceUser: Message | undefined,
 ) {
@@ -6652,10 +7474,39 @@ function renderAssistantProcess(
 
   const body = el(doc, "div", "assistant-process-body");
   if (summary) {
+    const contextRow = el(doc, "div", "bubble-context-row");
     const chip = el(doc, "div", "bubble-context-chip", summary);
-    if (sourceUser.context.planReason)
+    const locator = sourceUser.task?.pdfSelection;
+    if (locator) {
+      const jumpOriginal = () => {
+        void jumpToPdfSelection(mount, state, locator);
+      };
+      chip.classList.add("bubble-context-chip-clickable");
+      chip.setAttribute("role", "button");
+      chip.setAttribute("tabindex", "0");
+      chip.title = "回到 PDF 原选区，并重新选中这句话";
+      chip.addEventListener("click", jumpOriginal);
+      chip.addEventListener("keydown", (event: KeyboardEvent) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        jumpOriginal();
+      });
+
+      const jump = buttonEl(doc, "查看原选区");
+      jump.className = "bubble-context-jump";
+      jump.title = "回到 PDF 原选区，并重新选中这句话";
+      jump.addEventListener("click", () => {
+        jump.blur();
+        jumpOriginal();
+      });
+      contextRow.append(chip, jump);
+    } else if (sourceUser.context.planReason) {
       chip.title = sourceUser.context.planReason;
-    body.append(chip);
+      contextRow.append(chip);
+    } else {
+      contextRow.append(chip);
+    }
+    body.append(contextRow);
   }
   renderToolTrace(doc, body, tools);
   details.append(body);
@@ -7765,7 +8616,6 @@ export function registerSidebarForWindow(win: Window) {
   doc.getElementById(COLUMN_ID)?.remove();
   doc.getElementById(NOTE_SPLITTER_ID)?.remove();
   doc.getElementById(NOTE_COLUMN_ID)?.remove();
-
   // XUL splitter + vbox: native Zotero column rather than a React mount.
   // WHY native DOM (not React): Zotero 7+'s ItemPane DOES NOT recover
   // gracefully from a React tree crash inside its custom-element column.
@@ -7794,7 +8644,9 @@ export function registerSidebarForWindow(win: Window) {
   const noteColumn = doc.createXULElement("vbox");
   noteColumn.id = NOTE_COLUMN_ID;
   noteColumn.setAttribute("class", "zai-note-column");
-  noteColumn.setAttribute("width", "360");
+  noteColumn.setAttribute("width", String(DEFAULT_NOTE_COLUMN_WIDTH));
+  noteColumn.setAttribute("minwidth", String(MIN_NOTE_COLUMN_WIDTH));
+  noteColumn.setAttribute("maxwidth", String(MAX_NOTE_COLUMN_WIDTH));
   noteColumn.setAttribute("zotero-persist", "width");
   noteColumn.setAttribute("collapsed", "true");
   noteColumn.setAttribute("hidden", "true");
@@ -7809,7 +8661,9 @@ export function registerSidebarForWindow(win: Window) {
   const column = doc.createXULElement("vbox");
   column.id = COLUMN_ID;
   column.setAttribute("class", "zai-column");
-  column.setAttribute("width", "380");
+  column.setAttribute("width", String(DEFAULT_AI_COLUMN_WIDTH));
+  column.setAttribute("minwidth", String(MIN_AI_COLUMN_WIDTH));
+  column.setAttribute("maxwidth", String(MAX_AI_COLUMN_WIDTH));
   column.setAttribute("zotero-persist", "width");
   column.addEventListener("wheel", (event: Event) => event.stopPropagation(), {
     passive: true,
@@ -7858,6 +8712,7 @@ export function registerSidebarForWindow(win: Window) {
   splitter.addEventListener("mouseup", () => updateToggleButton(state));
   windowSidebars.set(win, state);
   mountedWindows.add(win);
+  installReaderLayoutMemory(win, state);
   installToggleButton(win, state);
   installFloatingToggle(win, state);
   patchItemSelection(win, state);
@@ -7877,6 +8732,147 @@ function scheduleWindowRegisterRetry(win: Window): void {
     return;
   }
   win.setTimeout(() => registerSidebarForWindow(win), 250);
+}
+
+function installReaderLayoutMemory(win: Window, state: WindowSidebarState): void {
+  const remember = () => rememberLastNoteWidth(state);
+  const scheduleRemember = () => {
+    if (state.layoutSaveTimer != null) win.clearTimeout(state.layoutSaveTimer);
+    state.layoutSaveTimer = win.setTimeout(() => {
+      state.layoutSaveTimer = undefined;
+      rememberLastNoteWidth(state);
+    }, 180);
+  };
+  let resizeObserver:
+    | { observe: (target: Element) => void; disconnect: () => void }
+    | undefined;
+  const ResizeObserverCtor = (win as any).ResizeObserver;
+  if (typeof ResizeObserverCtor === "function") {
+    resizeObserver = new ResizeObserverCtor(scheduleRemember);
+    resizeObserver?.observe(state.noteColumn);
+  }
+  state.noteSplitter.addEventListener("command", scheduleRemember);
+  state.noteSplitter.addEventListener("mouseup", remember);
+  win.addEventListener("mouseup", remember, true);
+  state.layoutCleanup = () => {
+    resizeObserver?.disconnect();
+    state.noteSplitter.removeEventListener("command", scheduleRemember);
+    state.noteSplitter.removeEventListener("mouseup", remember);
+    win.removeEventListener("mouseup", remember, true);
+    win.removeEventListener("beforeunload", remember);
+    if (state.layoutSaveTimer != null) {
+      win.clearTimeout(state.layoutSaveTimer);
+      state.layoutSaveTimer = undefined;
+    }
+  };
+  win.addEventListener("beforeunload", remember);
+}
+
+function isNoteColumnVisible(state: WindowSidebarState): boolean {
+  const noteColumn = state.noteColumn as Element & {
+    hidden?: boolean;
+    collapsed?: boolean;
+  };
+  return !(
+    noteColumn.hidden === true ||
+    noteColumn.collapsed === true ||
+    state.noteColumn.getAttribute("hidden") === "true" ||
+    state.noteColumn.getAttribute("collapsed") === "true"
+  );
+}
+
+function applyLastNoteWidth(state: WindowSidebarState): void {
+  const width = loadReaderLayoutPrefs().noteWidth ?? DEFAULT_NOTE_COLUMN_WIDTH;
+  setColumnWidth(
+    state.noteColumn,
+    clampWidth(width, MIN_NOTE_COLUMN_WIDTH, MAX_NOTE_COLUMN_WIDTH),
+  );
+}
+
+function rememberLastNoteWidth(state: WindowSidebarState): void {
+  if (!isNoteColumnVisible(state)) return;
+  const noteWidth = measuredElementWidth(state.noteColumn);
+  if (noteWidth == null) return;
+  saveReaderLayoutPrefs({ noteWidth });
+}
+
+function measuredElementWidth(
+  element: Element | null | undefined,
+): number | undefined {
+  if (!element) return undefined;
+  const rectWidth = element.getBoundingClientRect?.().width;
+  if (Number.isFinite(rectWidth) && rectWidth > 0.5) {
+    return Math.round(rectWidth);
+  }
+  const attrWidth = Number(element.getAttribute("width"));
+  return Number.isFinite(attrWidth) && attrWidth > 0
+    ? Math.round(attrWidth)
+    : undefined;
+}
+
+function setColumnWidth(element: Element, width: number): void {
+  const rounded = Math.round(width);
+  element.removeAttribute("flex");
+  element.setAttribute("width", String(rounded));
+  (element as HTMLElement).style.width = `${rounded}px`;
+  (element as HTMLElement).style.minWidth = `${MIN_NOTE_COLUMN_WIDTH}px`;
+  (element as HTMLElement).style.maxWidth = `${MAX_NOTE_COLUMN_WIDTH}px`;
+}
+
+function loadReaderLayoutPrefs(): ReaderLayoutPrefs {
+  try {
+    const raw = (
+      Zotero as unknown as {
+        Prefs: { get: (key: string, global: boolean) => unknown };
+      }
+    ).Prefs.get(READER_LAYOUT_PREF_KEY, true);
+    if (typeof raw !== "string" || !raw) return {};
+    return normalizeReaderLayoutPrefs(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+function saveReaderLayoutPrefs(partial: ReaderLayoutPrefs): void {
+  const next = normalizeReaderLayoutPrefs({
+    ...partial,
+    updatedAt: Date.now(),
+  });
+  try {
+    (
+      Zotero as unknown as {
+        Prefs: {
+          set: (key: string, value: string, global: boolean) => void;
+        };
+      }
+    ).Prefs.set(READER_LAYOUT_PREF_KEY, JSON.stringify(next), true);
+  } catch (err) {
+    debugZai("reader-layout.save.failed", { error: errorMessage(err) });
+  }
+}
+
+function normalizeReaderLayoutPrefs(value: unknown): ReaderLayoutPrefs {
+  const input =
+    value && typeof value === "object" ? (value as ReaderLayoutPrefs) : {};
+  return {
+    ...(typeof input.noteWidth === "number"
+      ? {
+          noteWidth: clampWidth(
+            input.noteWidth,
+            MIN_NOTE_COLUMN_WIDTH,
+            MAX_NOTE_COLUMN_WIDTH,
+          ),
+        }
+      : {}),
+    ...(typeof input.updatedAt === "number"
+      ? { updatedAt: input.updatedAt }
+      : {}),
+  };
+}
+
+function clampWidth(width: number, min: number, max: number): number {
+  if (!Number.isFinite(width)) return min;
+  return Math.round(Math.max(min, Math.min(max, width)));
 }
 
 function installReaderTranslateToolbar(
@@ -8817,18 +9813,43 @@ async function importSelectionToNote(
   });
 
   try {
+    const noteScroll = captureVisibleNoteScrollForDocument(doc);
+    armVisibleNoteRestoreForDocument(
+      doc,
+      noteScroll,
+      "import-selection:before-insert",
+    );
     const target = await resolveTargetNote(itemID);
     debugZai("import-selection:target-note", {
       noteID: target.note.id,
       created: target.created,
       noteBefore: textDebugInfo(target.note.getNote?.() || "", 120),
     });
+    const activeEditor = findActiveNoteEditor(sidebar);
+    const activeCaret = noteCaretSnapshotForSidebar(sidebar);
+    if (
+      activeEditor &&
+      sidebar.noteItemID === target.note.id &&
+      tryInsertHTMLAtCursor(activeEditor, html, activeCaret)
+    ) {
+      activeEditor.saveSync?.();
+      sidebar.noteCaretSnapshot =
+        captureNoteCaretSnapshot(activeEditor, sidebar.noteItemID) ??
+        sidebar.noteCaretSnapshot;
+      ensureAllZoteroNoteEditorKatexCSS(doc);
+      debugZai("import-selection:cursor-inserted", {
+        noteID: target.note.id,
+        caret: activeCaret ? noteCaretSnapshotDebugInfo(activeCaret) : null,
+        noteAfterInsert: textDebugInfo(target.note.getNote?.() || "", 120),
+      });
+      return;
+    }
     // Better Notes' editor insertion path uses ProseMirror insertHTML(),
     // which can truncate multi-block snippets after display math. Force
     // metadata insertion for selection imports, then refresh the visible
     // editor so all blocks after the formula survive.
     await insertHTMLIntoNote(target.note, html, true);
-    refreshVisibleNoteWindow(doc, target.note.id);
+    refreshVisibleNoteWindow(doc, target.note.id, noteScroll);
     ensureAllZoteroNoteEditorKatexCSS(doc);
     doc.defaultView?.setTimeout(() => {
       ensureAllZoteroNoteEditorKatexCSS(doc);
@@ -8859,46 +9880,6 @@ function markdownToClipboardHTML(doc: Document, markdown: string): string {
   return String(tmp.innerHTML);
 }
 
-function findActiveNoteEditor(
-  sidebar: WindowSidebarState,
-): ZoteroNoteEditorElement | null {
-  const editor = sidebar.noteMount.querySelector(
-    "note-editor",
-  ) as ZoteroNoteEditorElement | null;
-  return editor ?? null;
-}
-
-function tryInsertHTMLAtCursor(
-  editor: ZoteroNoteEditorElement,
-  html: string,
-): boolean {
-  try {
-    const iframeWin = editor.getCurrentInstance?.()?._iframeWindow as
-      | (Window & { wrappedJSObject?: any })
-      | undefined;
-    if (!iframeWin) return false;
-    const wrapped = iframeWin.wrappedJSObject ?? iframeWin;
-    const instance = wrapped._currentEditorInstance;
-    const core = instance?._editorCore;
-    if (!core?.view?.state || typeof core.insertHTML !== "function") {
-      return false;
-    }
-    const sel = core.view.state.selection;
-    let position: number;
-    try {
-      position = sel.$anchor.after(sel.$anchor.depth);
-    } catch {
-      position = core.view.state.doc.content.size;
-    }
-    const docSize = core.view.state.doc.content.size;
-    position = Math.max(0, Math.min(position, docSize));
-    core.insertHTML(position, html);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function unregisterSidebarForWindow(win: Window) {
   const state = windowSidebars.get(win);
   if (!state) return;
@@ -8927,6 +9908,8 @@ export function unregisterSidebarForWindow(win: Window) {
   state.promptShortcutCleanup = undefined;
   state.readerTranslateToolbarCleanup?.();
   state.readerTranslateToolbarCleanup = undefined;
+  state.layoutCleanup?.();
+  state.layoutCleanup = undefined;
   state.initialRefreshCleanup?.();
   state.initialRefreshCleanup = undefined;
   state.noteColumn.remove();
@@ -8957,8 +9940,43 @@ function renderWindowSidebar(win: Window) {
     return;
   }
 
+  const previousItemID = panelState?.itemID ?? null;
   renderMount(state.mount, itemID);
+  if (itemID !== previousItemID) {
+    if (state.noteItemID) switchNoteForItem(state, itemID);
+    void migrateTranslateModeOnReaderSwitch(win);
+  }
   updateToggleButton(state);
+}
+
+function switchNoteForItem(
+  sidebar: WindowSidebarState,
+  itemID: number | null,
+): void {
+  const note = findExistingNoteForItem(itemID);
+  if (note) {
+    sidebar.noteEditorCleanup?.();
+    sidebar.noteEditorCleanup = undefined;
+    sidebar.noteMount.replaceChildren();
+    sidebar.noteItemID = note.id;
+    renderNoteWindow(sidebar, note);
+  } else {
+    sidebar.noteItemID = undefined;
+    sidebar.noteEditorCleanup?.();
+    sidebar.noteEditorCleanup = undefined;
+    sidebar.noteMount.replaceChildren();
+    setNoteColumnVisible(sidebar, false);
+  }
+  updateOpenNoteButton(sidebar);
+}
+
+function findExistingNoteForItem(itemID: number | null): Zotero.Item | null {
+  if (itemID == null) return null;
+  const item = getZoteroItem(itemID);
+  if (!item) return null;
+  if (isZoteroNote(item)) return item;
+  const parent = parentItemForNotes(item);
+  return childNotesForItem(parent)[0] ?? null;
 }
 
 function safeSelectedItemID(win: Window): number | null {
@@ -9072,7 +10090,7 @@ function setColumnCollapsed(
     state.splitter.removeAttribute("hidden");
     state.splitter.removeAttribute("state");
     if (!state.column.getAttribute("width")) {
-      state.column.setAttribute("width", "380");
+      state.column.setAttribute("width", String(DEFAULT_AI_COLUMN_WIDTH));
     }
     renderWindowSidebar(win);
   }
@@ -9204,6 +10222,23 @@ function itemIDToParentID(itemID: unknown): number | null {
   } catch {
     return itemID;
   }
+}
+
+async function migrateTranslateModeOnReaderSwitch(win: Window): Promise<void> {
+  const existing = translateControllers.get(win);
+  if (!existing?.isEnabled()) return;
+  const reader = getActiveReader(win);
+  if (!reader || existing.isForReader(reader)) return;
+  existing.disable();
+  const prefs = zoteroPrefs();
+  const ctrl = new TranslateModeController({ prefs, presets: loadPresets(prefs), reader });
+  translateControllers.set(win, ctrl);
+  try {
+    await ctrl.enable();
+  } catch {
+    translateControllers.delete(win);
+  }
+  syncTranslateButtons(win);
 }
 
 async function toggleTranslateMode(win: Window, btn: HTMLElement): Promise<void> {

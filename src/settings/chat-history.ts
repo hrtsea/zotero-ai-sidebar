@@ -66,9 +66,15 @@ interface ZoteroGroupsAPI {
   get(groupID: number): ZoteroGroupLike | false | undefined;
 }
 
+interface ZoteroDataDirectoryAPI {
+  dir?: string;
+  path?: string;
+}
+
 interface ZoteroGlobal {
   File: ZoteroFileAPI;
   Profile: ZoteroProfileAPI;
+  DataDirectory?: ZoteroDataDirectoryAPI;
   Items?: ZoteroItemsAPI;
   Libraries?: ZoteroLibrariesAPI;
   Groups?: ZoteroGroupsAPI;
@@ -95,6 +101,14 @@ export interface ImportThreadsResult {
 
 const HISTORY_FILE = 'zotero-ai-sidebar-chat-history.json';
 let writeQueue: Promise<void> = Promise.resolve();
+
+// ~/Zotero/ (DataDirectory) is the preferred storage location so chat
+// history lives alongside PDFs and survives profile resets. Falls back to
+// Profile.dir if DataDirectory is unavailable (older Zotero builds).
+function historyDir(): string {
+  const Z = getZotero();
+  return Z.DataDirectory?.dir ?? Z.DataDirectory?.path ?? Z.Profile.dir;
+}
 
 export async function loadChatMessages(itemID: number | null): Promise<Message[]> {
   const threads = await readThreads();
@@ -128,19 +142,32 @@ export function saveChatMessages(itemID: number | null, messages: Message[]): Pr
 }
 
 export function chatHistoryPath(): string {
-  return `${getZotero().Profile.dir}/${HISTORY_FILE}`;
+  return `${historyDir()}/${HISTORY_FILE}`;
 }
 
 async function readThreads(): Promise<StoredThreads> {
-  try {
-    const raw = await getZotero().File.getContentsAsync(chatHistoryPath(), 'utf-8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as StoredThreads)
-      : {};
-  } catch {
-    return {};
+  const Z = getZotero();
+  // Try new location first (~/Zotero/), then migrate from old profile-dir
+  // location if the new one is absent. Migration is one-time: we write the
+  // file to the new path and leave the old copy in place as a backup.
+  const newPath = chatHistoryPath();
+  const oldPath = `${Z.Profile.dir}/${HISTORY_FILE}`;
+  for (const path of [newPath, oldPath]) {
+    try {
+      const raw = await Z.File.getContentsAsync(path, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (path === oldPath) {
+          // Migrate: write to new location so next read uses the new path.
+          await Z.File.putContentsAsync(newPath, JSON.stringify(parsed, null, 2));
+        }
+        return parsed as StoredThreads;
+      }
+    } catch {
+      // continue to next candidate
+    }
   }
+  return {};
 }
 
 async function writeThreads(threads: StoredThreads): Promise<void> {

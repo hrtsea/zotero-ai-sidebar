@@ -5,12 +5,6 @@ import {
   type PortableAnnotation,
 } from './annotations';
 import {
-  exportAllThreads,
-  importAllThreads,
-  type ImportThreadsResult,
-  type PortableThread,
-} from '../settings/chat-history';
-import {
   loadQuickPromptSettings,
   normalizeQuickPromptSettings,
   saveQuickPromptSettings,
@@ -35,11 +29,6 @@ import {
   saveTranslateSettings,
 } from '../translate/settings';
 import {
-  loadCache as loadTranslateCacheState,
-  saveCache as saveTranslateCacheState,
-  type TranslateCacheState,
-} from '../translate/cache';
-import {
   loadUiSettings,
   normalizeUiSettings,
   saveUiSettings,
@@ -48,9 +37,11 @@ import {
 
 // Sync snapshot: the on-the-wire JSON we push to / pull from the cloud.
 //
-// `schema` is required so a future format break (e.g. moving to a binary
-// chat-history transport) can be detected and rejected with a clear error
-// instead of silently mis-merging.
+// `schema` is required so a future format break can be detected and rejected
+// with a clear error instead of silently mis-merging.
+//
+// Chat history and translate cache are NOT included — they are stored locally
+// in ~/Zotero/ alongside PDFs and are not synced to the cloud.
 
 export const SYNC_SCHEMA = 'zotero-ai-sidebar.sync.v1';
 
@@ -61,27 +52,20 @@ export interface SyncSnapshot {
   uiSettings: UiSettings;
   quickPrompts: QuickPromptSettings;
   toolSettings: ToolSettings;
-  threads: PortableThread[];
   // `annotations` was added after the initial v1 snapshot shipped, so it
   // stays optional on the wire — older payloads without it parse fine
   // and just yield zero imports.
   annotations: PortableAnnotation[];
-  // Added v1.1 (still under SYNC_SCHEMA v1 — both fields are optional on
-  // the wire). Older payloads without these parse to defaults.
+  // Added v1.1 (still under SYNC_SCHEMA v1 — optional on the wire).
   translateSettings?: TranslateSettings;
-  translateCache?: TranslateCacheState;
 }
 
 export interface ApplySnapshotResult {
-  threads: ImportThreadsResult;
   annotations: ImportAnnotationsResult;
 }
 
 export async function buildSyncSnapshot(prefs: PrefsStore): Promise<SyncSnapshot> {
-  const [threads, annotations] = await Promise.all([
-    exportAllThreads(),
-    exportAllAnnotations(),
-  ]);
+  const annotations = await exportAllAnnotations();
   return {
     schema: SYNC_SCHEMA,
     exportedAt: new Date().toISOString(),
@@ -89,10 +73,8 @@ export async function buildSyncSnapshot(prefs: PrefsStore): Promise<SyncSnapshot
     uiSettings: loadUiSettings(prefs),
     quickPrompts: loadQuickPromptSettings(prefs),
     toolSettings: loadToolSettings(prefs),
-    threads: stripLocalTaskStateFromThreads(threads),
     annotations,
     translateSettings: loadTranslateSettings(prefs),
-    translateCache: loadTranslateCacheState(prefs),
   };
 }
 
@@ -118,12 +100,10 @@ export function parseSyncSnapshot(raw: string): SyncSnapshot {
     uiSettings: normalizeUiSettings(parsed.uiSettings),
     quickPrompts: normalizeQuickPromptSettings(parsed.quickPrompts),
     toolSettings: normalizeToolSettings(parsed.toolSettings),
-    threads: normalizePortableThreads(parsed.threads),
     annotations: normalizePortableAnnotations(parsed.annotations),
     translateSettings: parsed.translateSettings === undefined
       ? undefined
       : normalizeTranslateSettings(parsed.translateSettings),
-    translateCache: normalizeTranslateCache(parsed.translateCache),
   };
 }
 
@@ -131,72 +111,13 @@ export async function applySyncSnapshot(
   prefs: PrefsStore,
   snapshot: SyncSnapshot,
 ): Promise<ApplySnapshotResult> {
-  // Settings: write the full normalized blob — no per-key merge. Same
-  // semantics as the existing config import in hooks.ts: pulling means
-  // "make my local settings match the cloud". Chat threads ARE merged
-  // per-thread (last-write-wins by updatedAt) so a partial pull doesn't
-  // wipe out conversations recorded since the last push.
   savePresets(prefs, snapshot.presets);
   saveUiSettings(prefs, snapshot.uiSettings);
   saveQuickPromptSettings(prefs, snapshot.quickPrompts);
   saveToolSettings(prefs, snapshot.toolSettings);
   if (snapshot.translateSettings) saveTranslateSettings(prefs, snapshot.translateSettings);
-  if (snapshot.translateCache) saveTranslateCacheState(prefs, snapshot.translateCache);
-  const [threads, annotations] = await Promise.all([
-    importAllThreads(snapshot.threads),
-    importAllAnnotations(snapshot.annotations),
-  ]);
-  return { threads, annotations };
-}
-
-function normalizePortableThreads(value: unknown): PortableThread[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
-    const libraryType =
-      entry.libraryType === 'user' ||
-      entry.libraryType === 'group' ||
-      entry.libraryType === 'global'
-        ? entry.libraryType
-        : null;
-    if (!libraryType) return [];
-    const updatedAt = typeof entry.updatedAt === 'string' ? entry.updatedAt : '';
-    const messages = Array.isArray(entry.messages) ? entry.messages : [];
-    const portable: PortableThread = {
-      libraryType,
-      updatedAt,
-      messages: stripLocalTaskState(messages as PortableThread['messages']),
-    };
-    if (libraryType === 'group' && typeof entry.groupID === 'number') {
-      portable.groupID = entry.groupID;
-    }
-    if (libraryType !== 'global' && typeof entry.itemKey === 'string') {
-      portable.itemKey = entry.itemKey;
-    }
-    if (libraryType !== 'global' && !portable.itemKey) return [];
-    if (libraryType === 'group' && typeof portable.groupID !== 'number') {
-      return [];
-    }
-    return [portable];
-  });
-}
-
-function stripLocalTaskStateFromThreads(
-  threads: PortableThread[],
-): PortableThread[] {
-  return threads.map((thread) => ({
-    ...thread,
-    messages: stripLocalTaskState(thread.messages),
-  }));
-}
-
-function stripLocalTaskState(
-  messages: PortableThread['messages'],
-): PortableThread['messages'] {
-  return messages.map((message) => {
-    const { task: _task, ...portable } = message;
-    return portable;
-  });
+  const annotations = await importAllAnnotations(snapshot.annotations);
+  return { annotations };
 }
 
 function normalizePortableAnnotations(value: unknown): PortableAnnotation[] {
@@ -244,20 +165,4 @@ function normalizePortableAnnotations(value: unknown): PortableAnnotation[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function normalizeTranslateCache(value: unknown): TranslateCacheState | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) return { entries: {} };
-  const entries = (value as { entries?: Record<string, unknown> }).entries;
-  if (!entries || typeof entries !== 'object') return { entries: {} };
-  const out: TranslateCacheState['entries'] = {};
-  for (const [k, v] of Object.entries(entries)) {
-    if (!v || typeof v !== 'object') continue;
-    const e = v as Partial<{ text: string; model: string; createdAt: number }>;
-    if (typeof e.text === 'string' && typeof e.model === 'string' && typeof e.createdAt === 'number') {
-      out[k] = { text: e.text, model: e.model, createdAt: e.createdAt };
-    }
-  }
-  return { entries: out };
 }

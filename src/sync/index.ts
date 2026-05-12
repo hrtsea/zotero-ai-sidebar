@@ -139,15 +139,14 @@ function errorMessage(prefix: string, err: unknown): string {
 }
 
 function formatPullMessage(applied: ApplySnapshotResult): string {
-  const { threads, annotations } = applied;
+  const { annotations } = applied;
   const lines = [
-    `已应用云端配置（账号、显示、提示词、联网/MCP）。`,
-    `对话历史：导入 ${threads.imported} 条 / 跳过本地更新 ${threads.unchanged} 条 / 未匹配本地条目 ${threads.unresolved} 条。`,
+    `已应用云端配置（账号、显示、提示词、联网/MCP、翻译设置）。`,
     `PDF 注释：导入 ${annotations.imported} 条 / 跳过本地更新 ${annotations.unchanged} 条 / 未匹配 PDF ${annotations.unresolved} 条 / 跳过其它 ${annotations.skipped} 条。`,
   ];
-  if (threads.unresolved > 0 || annotations.unresolved > 0) {
+  if (annotations.unresolved > 0) {
     lines.push(
-      '提示：未匹配的条目通常是 Zotero 主同步还没把对应论文 / PDF 拉过来；等 Zotero 同步完成后再点一次”从云端下载”即可。',
+      '提示：未匹配的注释通常是 Zotero 主同步还没把对应 PDF 拉过来；等 Zotero 同步完成后再点一次”从云端下载”即可。',
     );
   }
   return lines.join('\n');

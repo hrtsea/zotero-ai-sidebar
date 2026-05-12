@@ -540,7 +540,7 @@ export class TranslateModeController {
       thinking: settings.thinking,
       ctxLevel: settings.ctxLevel,
     });
-    const cached = forceRefresh ? undefined : getCachedTranslation(this.ctx.prefs, key);
+    const cached = forceRefresh ? undefined : await getCachedTranslation(key);
     if (cached) {
       debugLog("translation cache hit", {
         createdAt: cached.createdAt,
@@ -593,7 +593,7 @@ export class TranslateModeController {
             cacheRead: chunk.cacheRead,
           });
         } else if (chunk.type === "done" && buffer) {
-          setCachedTranslation(this.ctx.prefs, key, {
+          void setCachedTranslation(key, {
             text: buffer,
             model,
             createdAt: Date.now(),

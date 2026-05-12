@@ -335,7 +335,7 @@ async function runSyncPull(doc: Document): Promise<void> {
   const account = readSyncAccountControls(doc);
   saveSyncAccount(zoteroPrefs(), account);
   const ok = doc.defaultView?.confirm(
-    '从云端下载会按时间戳合并对话历史，并直接覆盖本地账号、显示、提示词、联网/MCP 和翻译配置。继续？',
+    '从云端下载会直接覆盖本地账号、显示、提示词、联网/MCP 和翻译配置。对话记录和翻译缓存不受影响。继续？',
   ) ?? true;
   if (!ok) {
     setStatus(doc, 'zai-sync-status', '已取消下载。');

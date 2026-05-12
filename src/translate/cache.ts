@@ -1,4 +1,3 @@
-export const CACHE_PREFS_KEY = 'extensions.zotero-ai-sidebar.translateCache';
 export const MAX_CACHE_ENTRIES = 500;
 
 export interface CacheEntry {
@@ -7,13 +6,8 @@ export interface CacheEntry {
   createdAt: number;
 }
 
-export interface TranslateCacheState {
+interface CacheState {
   entries: Record<string, CacheEntry>;
-}
-
-interface PrefsStore {
-  get(key: string): string | undefined;
-  set(key: string, value: string): void;
 }
 
 interface CacheKeyInput {
@@ -23,6 +17,17 @@ interface CacheKeyInput {
   model: string;
   thinking: string;
   ctxLevel: string;
+}
+
+interface ZoteroFileAPI {
+  getContentsAsync(path: string, charset?: string): Promise<string>;
+  putContentsAsync(path: string, contents: string): Promise<void>;
+}
+
+interface ZoteroGlobal {
+  File: ZoteroFileAPI;
+  DataDirectory?: { dir?: string; path?: string };
+  Profile: { dir: string };
 }
 
 // Synchronous FNV-1a-style 64-bit hex digest. Cache keys need stability
@@ -55,10 +60,22 @@ export function cacheKey(input: CacheKeyInput): string {
   return fnv1aHex64(payload).slice(0, 16);
 }
 
-export function loadCache(prefs: PrefsStore): TranslateCacheState {
-  const raw = prefs.get(CACHE_PREFS_KEY);
-  if (!raw) return { entries: {} };
+const CACHE_FILE = 'zotero-ai-sidebar-translate-cache.json';
+let writeQueue: Promise<void> = Promise.resolve();
+
+function getZotero(): ZoteroGlobal {
+  return (globalThis as unknown as { Zotero: ZoteroGlobal }).Zotero;
+}
+
+export function translateCachePath(): string {
+  const Z = getZotero();
+  const dir = Z.DataDirectory?.dir ?? Z.DataDirectory?.path ?? Z.Profile.dir;
+  return `${dir}/${CACHE_FILE}`;
+}
+
+async function readCache(): Promise<CacheState> {
   try {
+    const raw = await getZotero().File.getContentsAsync(translateCachePath(), 'utf-8');
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object') return { entries: {} };
     const entries = (parsed as { entries?: Record<string, unknown> }).entries;
@@ -77,30 +94,29 @@ export function loadCache(prefs: PrefsStore): TranslateCacheState {
   }
 }
 
-export function saveCache(prefs: PrefsStore, state: TranslateCacheState): void {
-  const trimmed = trimCache(state);
-  prefs.set(CACHE_PREFS_KEY, JSON.stringify(trimmed));
-}
-
-function trimCache(state: TranslateCacheState): TranslateCacheState {
+async function writeCache(state: CacheState): Promise<void> {
   const entries = Object.entries(state.entries);
-  if (entries.length <= MAX_CACHE_ENTRIES) return state;
-  entries.sort(([, a], [, b]) => b.createdAt - a.createdAt);
-  const kept = entries.slice(0, MAX_CACHE_ENTRIES);
-  const out: Record<string, CacheEntry> = {};
-  for (const [k, v] of kept) out[k] = v;
-  return { entries: out };
+  let trimmed = state;
+  if (entries.length > MAX_CACHE_ENTRIES) {
+    entries.sort(([, a], [, b]) => b.createdAt - a.createdAt);
+    const out: Record<string, CacheEntry> = {};
+    for (const [k, v] of entries.slice(0, MAX_CACHE_ENTRIES)) out[k] = v;
+    trimmed = { entries: out };
+  }
+  await getZotero().File.putContentsAsync(translateCachePath(), JSON.stringify(trimmed));
 }
 
-export function getCachedTranslation(prefs: PrefsStore, key: string): CacheEntry | undefined {
-  return loadCache(prefs).entries[key];
+export async function getCachedTranslation(key: string): Promise<CacheEntry | undefined> {
+  const state = await readCache();
+  return state.entries[key];
 }
 
-// Non-atomic load-modify-save. Safe here because writes are user-driven
-// (one click → one translate → one cache write), so concurrent writers
-// don't exist in the runtime model. Do not call from background timers.
-export function setCachedTranslation(prefs: PrefsStore, key: string, entry: CacheEntry): void {
-  const state = loadCache(prefs);
-  state.entries[key] = entry;
-  saveCache(prefs, state);
+// Writes are serialized via writeQueue — same pattern as chat-history.ts.
+export function setCachedTranslation(key: string, entry: CacheEntry): Promise<void> {
+  writeQueue = writeQueue.catch(() => undefined).then(async () => {
+    const state = await readCache();
+    state.entries[key] = entry;
+    await writeCache(state);
+  });
+  return writeQueue;
 }

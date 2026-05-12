@@ -40,7 +40,7 @@
 }
 
 #zai-column {
-  width: 420px;
+  width: 380px;
   min-width: 320px;
   max-width: 760px;
   border-left: 1px solid var(--zai-border);
@@ -53,7 +53,7 @@
 }
 
 #zai-note-column {
-  width: 360px;
+  width: 560px;
   min-width: 260px;
   max-width: 700px;
   border-left: 2px solid rgba(192, 103, 61, 0.55);
@@ -983,6 +983,49 @@ button:disabled,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.bubble-context-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  margin: 0 0 7px;
+  flex-wrap: wrap;
+}
+
+.bubble-context-row .bubble-context-chip {
+  margin: 0;
+}
+
+.bubble-context-chip-clickable {
+  cursor: pointer;
+}
+
+.bubble-context-chip-clickable:hover,
+.bubble-context-chip-clickable:focus-visible {
+  border-color: var(--zai-accent);
+  box-shadow: 0 0 0 2px rgba(192, 103, 61, 0.14);
+  outline: none;
+}
+
+.bubble-context-jump {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid #c7dfe8;
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--zai-blue);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bubble-context-jump:hover,
+.bubble-context-jump:focus-visible {
+  border-color: var(--zai-blue);
+  box-shadow: 0 0 0 2px rgba(45, 111, 143, 0.12);
+  outline: none;
 }
 
 .bubble-tool-trace {
@@ -2429,4 +2472,3 @@ div.math-fallback {
   background: var(--zai-accent-soft);
   border-color: var(--zai-accent);
 }
-
