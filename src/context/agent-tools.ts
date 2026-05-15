@@ -5,6 +5,7 @@ import type {
   ToolExecutionResult,
 } from "../providers/types";
 import type { ContextSource, ItemMetadata } from "./builder";
+import { freezeFullText, getFrozenFullText } from "../settings/paper-cache";
 import { formatAnnotations, formatRetrievedPassages } from "./message-format";
 import { createPaperTools } from "./paper-tools";
 import { createPdfLocator, type PdfLocator } from "./pdf-locator";
@@ -233,28 +234,35 @@ export function createZoteroAgentToolSession(
         const itemID = currentItemID(options);
         if (itemID == null)
           return errorResult("No Zotero item is currently selected.");
-        const [pdfText, sourceContext] = await Promise.all([
-          getToolPdfText(options, itemID),
-          zoteroSourceContext(options, itemID),
-        ]);
-        if (!pdfText) return errorResult(readablePdfTextError());
-        const text = truncateByTokenBudget(pdfText, policy.fullPdfTokenBudget);
-        const truncated = text.length < pdfText.length;
+        // Reuse a frozen copy if one exists (cache-existence check); only
+        // extract when there is no usable cache.
+        let text = await getFrozenFullText(itemID);
+        let truncated = false;
+        let totalChars = 0;
+        if (text == null) {
+          const pdfText = await getToolPdfText(options, itemID);
+          if (!pdfText) return errorResult(readablePdfTextError());
+          text = truncateByTokenBudget(pdfText, policy.fullPdfTokenBudget);
+          truncated = text.length < pdfText.length;
+          totalChars = pdfText.length;
+          await freezeFullText(itemID, text);
+        } else {
+          totalChars = text.length;
+        }
+        const sourceContext = await zoteroSourceContext(options, itemID);
         return {
           output: [
-            "[Paper full text]",
-            `Chars: ${text.length} / ${pdfText.length}`,
-            `Truncated: ${truncated ? "yes" : "no"}`,
-            `Range: 0-${text.length}`,
-            "",
-            text,
-          ].join("\n"),
-          summary: `读取 PDF 全文 ${text.length}/${pdfText.length} 字`,
+            "Full paper text is now provided at the start of this",
+            "conversation under the heading [Paper full text]. Read the paper",
+            "from there. Do not call zotero_get_full_pdf again this turn.",
+          ].join(" "),
+          summary: `读取 PDF 全文 ${text.length}/${totalChars} 字`,
+          frontBlock: text,
           context: {
             planMode: "full_pdf",
             ...sourceContext,
             fullTextChars: text.length,
-            fullTextTotalChars: pdfText.length,
+            fullTextTotalChars: totalChars,
             fullTextTruncated: truncated,
             rangeStart: 0,
             rangeEnd: text.length,

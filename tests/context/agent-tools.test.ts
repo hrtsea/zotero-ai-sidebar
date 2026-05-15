@@ -12,10 +12,12 @@ const source: ContextSource = {
 
 let savedJSON: Record<string, unknown> | null = null;
 let saveCount = 0;
+let paperCacheStore = "{}";
 
 beforeEach(() => {
   savedJSON = null;
   saveCount = 0;
+  paperCacheStore = "{}";
   Object.defineProperty(globalThis, "Zotero", {
     configurable: true,
     value: {
@@ -34,6 +36,15 @@ beforeEach(() => {
           savedJSON = json;
           saveCount += 1;
           return { id: 99 };
+        },
+      },
+      // paper-cache needs DataDirectory + File to read/write the cache file.
+      DataDirectory: { dir: "/tmp/zotero-data" },
+      Profile: { dir: "/tmp/zotero-profile" },
+      File: {
+        getContentsAsync: async () => paperCacheStore,
+        putContentsAsync: async (_path: string, contents: string) => {
+          paperCacheStore = contents;
         },
       },
     },
@@ -542,8 +553,9 @@ describe("createZoteroAgentTools", () => {
 
     const result = await tool!.execute({});
 
-    expect(result.output).toContain("Chars: 8 / 20");
-    expect(result.output).toContain("Truncated: yes");
+    expect(result.frontBlock).toBe("A".repeat(8));
+    expect(result.output).toContain("[Paper full text]");
+    expect(result.output).not.toContain("A".repeat(8));
     expect(result.context).toMatchObject({
       planMode: "full_pdf",
       sourceKind: "zotero_item",
@@ -637,8 +649,10 @@ describe("createZoteroAgentTools", () => {
     });
     const readerResult = await readerText!.execute({});
 
-    expect(fullResult.output).toContain("cache text for ordinary summary");
-    expect(fullResult.output).not.toContain("reader text");
+    expect(fullResult.frontBlock).toContain("cache text for ordinary summary");
+    expect(fullResult.frontBlock).not.toContain("reader text");
+    expect(fullResult.output).toContain("[Paper full text]");
+    expect(fullResult.output).not.toContain("cache text for ordinary summary");
     expect(searchResult.output).toContain("cache text for ordinary summary");
     expect(readerResult.output).toContain("[Reader PDF text for annotation]");
     expect(readerResult.output).toContain("reader text used for highlighting");
@@ -842,6 +856,25 @@ describe("createZoteroAgentTools", () => {
       });
       expect(result.output).toContain("1 nodes");
     });
+  });
+
+  it("zotero_get_full_pdf returns a front block and an ack, not the buried text", async () => {
+    const session = createZoteroAgentToolSession({
+      source: {
+        ...source,
+        getFullText: async () => "PAPER BODY",
+      },
+      itemID: 1,
+    });
+    const tools = session.tools;
+    const tool = tools.find((t) => t.name === "zotero_get_full_pdf")!;
+    const result = await tool.execute({});
+
+    expect(result.frontBlock).toBe("PAPER BODY");
+    expect(result.output).not.toContain("PAPER BODY");
+    expect(result.output).toContain("[Paper full text]");
+    expect(result.context?.planMode).toBe("full_pdf");
+    session.dispose();
   });
 });
 
