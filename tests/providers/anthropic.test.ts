@@ -282,4 +282,10 @@ describe('toAnthropicSystem', () => {
       },
     ]);
   });
+
+  it('treats an empty pinnedFullText as absent', () => {
+    expect(toAnthropicSystem('SYS', '')).toEqual([
+      { type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
 });
