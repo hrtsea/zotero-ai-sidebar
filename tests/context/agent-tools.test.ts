@@ -874,7 +874,35 @@ describe("createZoteroAgentTools", () => {
     expect(result.output).not.toContain("PAPER BODY");
     expect(result.output).toContain("[Paper full text]");
     expect(result.context?.planMode).toBe("full_pdf");
-    session.dispose();
+  });
+
+  it("zotero_get_full_pdf reuses a frozen cache entry without re-extracting", async () => {
+    // Pre-seed the in-memory paper-cache file with a frozen entry for item 1.
+    paperCacheStore = JSON.stringify({
+      "item:1": {
+        pinned: false,
+        fullText: "FROZEN PAPER TEXT",
+        charCount: 17,
+        capturedAt: "2026-01-01T00:00:00.000Z",
+        source: "full_pdf",
+      },
+    });
+    const tools = createZoteroAgentTools({
+      source: {
+        ...source,
+        // A frozen copy exists, so extraction must not happen: a call here
+        // means the reuse path was skipped.
+        getFullText: async () => {
+          throw new Error("getFullText must not be called when cache exists");
+        },
+      },
+      itemID: 1,
+    });
+    const tool = tools.find((t) => t.name === "zotero_get_full_pdf")!;
+    const result = await tool.execute({});
+
+    expect(result.frontBlock).toBe("FROZEN PAPER TEXT");
+    expect(result.context?.planMode).toBe("full_pdf");
   });
 });
 

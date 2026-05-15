@@ -239,8 +239,15 @@ export function createZoteroAgentToolSession(
         let text = await getFrozenFullText(itemID);
         let truncated = false;
         let totalChars = 0;
+        let sourceContext: Awaited<ReturnType<typeof zoteroSourceContext>>;
         if (text == null) {
-          const pdfText = await getToolPdfText(options, itemID);
+          // Extract path: getToolPdfText and zoteroSourceContext are
+          // independent — run them in parallel.
+          const [pdfText, ctx] = await Promise.all([
+            getToolPdfText(options, itemID),
+            zoteroSourceContext(options, itemID),
+          ]);
+          sourceContext = ctx;
           if (!pdfText) return errorResult(readablePdfTextError());
           text = truncateByTokenBudget(pdfText, policy.fullPdfTokenBudget);
           truncated = text.length < pdfText.length;
@@ -248,13 +255,13 @@ export function createZoteroAgentToolSession(
           await freezeFullText(itemID, text);
         } else {
           totalChars = text.length;
+          sourceContext = await zoteroSourceContext(options, itemID);
         }
-        const sourceContext = await zoteroSourceContext(options, itemID);
         return {
           output: [
-            "Full paper text is now provided at the start of this",
-            "conversation under the heading [Paper full text]. Read the paper",
-            "from there. Do not call zotero_get_full_pdf again this turn.",
+            "Full paper text is now provided at the top of this turn under",
+            "the heading [Paper full text]. Read the paper from there. Do not",
+            "call zotero_get_full_pdf again this turn.",
           ].join(" "),
           summary: `读取 PDF 全文 ${text.length}/${totalChars} 字`,
           frontBlock: text,
