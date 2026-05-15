@@ -19,9 +19,17 @@ Zotero AI Sidebar is a Zotero 7/8/9 plugin that adds an AI chat panel to the Zot
 - **Read PDF, write notes & highlights** — model-driven tools cover full text, annotations, screenshots, and child notes.
 - **Local-first history + WebDAV config sync** — keep chat history / translation cache local, while syncing presets, prompts, settings, and selected paper annotations through one `state.json` snapshot.
 
+## What's New in v0.4.1
+
+- **Context-rich AI reading routes**: the built-in Keshav three-pass prompt now emphasizes research context, prior-work lineage, evidence anchors, and a complete third-pass reconstruction route.
+- **Clickable source tracing**: reading-route quote blocks and `Fig.` / `Figure` / table references can jump back to the corresponding PDF passage or figure location from the Zotero note.
+- **Prompt reset clarity**: built-in prompt editors now show whether the local prompt matches the current bundled default, is customized, or has unsaved edits.
+- **Token usage visibility**: assistant responses surface input cache hits, cache misses, output tokens, total input tokens, and cache hit rate when the provider returns usage metadata.
+- **Rendering improvements**: Markdown list handling, reading-route semantic highlights, and mindmap rendering are more robust and covered by tests.
+
 ## Install
 
-1. Download the latest `zotero-ai-sidebar.xpi` from [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) (current stable: [`v0.3.0`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.3.0)).
+1. Download the latest `zotero-ai-sidebar.xpi` from [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) (current stable: [`v0.4.1`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.4.1)).
 2. Open Zotero 7, 8, or 9.
 3. Go to `Tools` -> `Plugins`.
 4. Click the gear icon and choose `Install Plugin From File...`.

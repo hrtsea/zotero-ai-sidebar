@@ -19,9 +19,17 @@ Zotero AI Sidebar 是一个适配 Zotero 7/8/9 的插件，会在条目面板 / 
 - **读 PDF、写笔记和注释** —— 由模型驱动的工具覆盖全文、批注、截图，以及子笔记的写入。
 - **本地历史 + WebDAV 配置同步** —— 对话历史 / 翻译缓存保存在本地，用一个 `state.json` 快照同步预设、提示词、设置和指定论文注释。
 
+## v0.4.1 更新
+
+- **Context-rich AI 阅读路线**：内置 Keshav three-pass 提示词强化了研究脉络、前作关系、证据锚点和完整第三遍复现 / 审稿路线。
+- **可点击溯源**：阅读路线笔记里的原文引用块，以及 `Fig.` / `Figure` / 表格引用，可以从 Zotero 笔记跳回 PDF 对应原文或图表位置。
+- **提示词 Reset 状态更清楚**：内置提示词编辑器会显示本地提示词是否等于当前插件内置默认、是否已自定义、是否存在未保存编辑。
+- **Token 用量可见**：当服务商返回 usage 元数据时，AI 回复会显示 input cache hit、cache miss、output、total input 和缓存命中率。
+- **渲染增强**：Markdown 列表、阅读路线语义高亮和 mindmap 渲染更稳定，并补充了对应测试。
+
 ## 安装
 
-1. 从 [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) 下载最新的 `zotero-ai-sidebar.xpi`（当前稳定版：[`v0.3.0`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.3.0)）。
+1. 从 [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) 下载最新的 `zotero-ai-sidebar.xpi`（当前稳定版：[`v0.4.1`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.4.1)）。
 2. 打开 Zotero 7、8 或 9。
 3. 进入 `工具` → `插件`。
 4. 点击齿轮图标，选择 `从文件安装插件…`。
