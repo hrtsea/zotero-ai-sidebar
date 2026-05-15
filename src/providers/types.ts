@@ -95,6 +95,9 @@ export interface ToolExecutionResult {
   output: string;
   summary?: string;
   context?: MessageContext;
+  // Raw paper full text a tool wants pinned as the front block for the rest
+  // of this turn's tool loop. Set by zotero_get_full_pdf.
+  frontBlock?: string;
 }
 
 export interface AgentTool {
@@ -111,6 +114,9 @@ export interface ProviderStreamOptions {
   permissionMode?: AgentPermissionMode;
   toolSettings?: ToolSettings;
   promptCacheKey?: string;
+  // Raw paper full text to pin as a front block (after the system prompt,
+  // before conversation history). Set by the manual "原文" toggle.
+  pinnedFullText?: string;
 }
 
 export type StreamChunk =
