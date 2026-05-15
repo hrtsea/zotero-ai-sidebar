@@ -1,8 +1,10 @@
 import { buildContext } from "../context/builder";
+import type { ContextSource } from "../context/builder";
 import {
   createZoteroAgentToolSession,
   saveSelectionAnnotation,
   saveTextAnnotationNearSelection,
+  truncateByTokenBudget,
   type SelectionAnnotationDraft,
   type ZoteroAgentToolSession,
 } from "../context/agent-tools";
@@ -14,7 +16,7 @@ import {
   retainedContextStats,
   toApiMessages,
 } from "../context/message-format";
-import { DEFAULT_CONTEXT_POLICY } from "../context/policy";
+import { DEFAULT_CONTEXT_POLICY, type ContextPolicy } from "../context/policy";
 import { createPdfLocator } from "../context/pdf-locator";
 import { extractPdfRange, searchPdfPassages } from "../context/retrieval";
 import { zoteroContextSource } from "../context/zotero-source";
@@ -26,6 +28,7 @@ import type {
   PdfSelectionLocator,
 } from "../providers/types";
 import { loadChatMessages, saveChatMessages } from "../settings/chat-history";
+import { freezeFullText, getFrozenFullText, isPaperPinned, setPaperPinned } from "../settings/paper-cache";
 import { loadQuickPromptSettings } from "../settings/quick-prompts";
 import { loadPresets, zoteroPrefs } from "../settings/storage";
 import {
@@ -364,6 +367,9 @@ interface PanelState {
   queueOpen?: boolean;
   processingQueuedTask?: boolean;
   renderRecoveryAttempts?: number;
+  // Mirrors the per-item "原文" toggle (paper-cache `pinned`). Loaded async by
+  // loadPersistedMessages; the toggle button renders from it synchronously.
+  paperPinned?: boolean;
 }
 
 interface MessagesScrollSnapshot {
@@ -3062,7 +3068,11 @@ function renderInput(doc: Document, mount: HTMLElement, state: PanelState) {
     slashMenu,
     input,
   );
-  row.append(inputStack, renderWebSearchSwitcher(doc, mount, state));
+  row.append(
+    inputStack,
+    renderWebSearchSwitcher(doc, mount, state),
+    renderPaperPinSwitcher(doc, mount, state),
+  );
   const imageAttach = renderImageAttachButton(
     doc,
     mount,
@@ -3373,6 +3383,39 @@ function webSearchToggleTitle(mode: WebSearchMode): string {
     default:
       return "联网已关闭；点击可开启";
   }
+}
+
+function renderPaperPinSwitcher(
+  doc: Document,
+  mount: HTMLElement,
+  state: PanelState,
+): HTMLElement {
+  const on = state.paperPinned === true;
+  const wrap = el(
+    doc,
+    "div",
+    on ? "web-search-switcher web-search-live" : "web-search-switcher",
+  );
+  const trigger = doc.createElement("button");
+  trigger.type = "button";
+  trigger.className = "web-search-trigger";
+  const hasItem = state.itemID != null;
+  trigger.textContent = on ? "📄 原文" : "＋ 原文";
+  trigger.title = !hasItem
+    ? "请先在 Zotero 中选择一篇有 PDF 的论文"
+    : on
+      ? "原文固定已开启：每轮把论文全文钉在对话最前面，模型始终基于完整原文回答；全文已缓存以降低重复发送成本。点击关闭。"
+      : '点击开启：把论文全文固定在每轮对话最前面，避免回答退化成“摘要的摘要”，并让全文可被缓存复用。';
+  trigger.disabled = !hasItem || state.sending;
+  trigger.addEventListener("click", () => {
+    if (state.itemID == null) return;
+    const next = !state.paperPinned;
+    state.paperPinned = next;
+    void setPaperPinned(state.itemID, next);
+    renderPanel(mount, state);
+  });
+  wrap.append(trigger);
+  return wrap;
 }
 
 // Composer-footer model switcher (Claudian-style).
@@ -4138,6 +4181,11 @@ async function streamAssistant(
       };
     }
     const baseContext = await buildSystemContextOnly(state.itemID);
+    const pinnedFullText = await resolvePinnedFullText(
+      state.itemID,
+      zoteroContextSource,
+      contextPolicy,
+    );
     // Build a fresh tool session per turn. WHY per-turn (not cached):
     // - Reader's PDF.js text layer can change between turns (user opens a
     //   different attachment); a stale locator would point at the wrong PDF.
@@ -4207,6 +4255,7 @@ async function streamAssistant(
         permissionMode: state.agentPermissionMode,
         toolSettings: loadToolSettings(zoteroPrefs()),
         promptCacheKey: buildPromptCacheKey(preset, state.itemID),
+        ...(pinnedFullText ? { pinnedFullText } : {}),
       },
     )) {
       if (chunk.type === "text_delta") {
@@ -4445,6 +4494,26 @@ function configuredAnnotationColors(): Set<string> {
   );
 }
 
+// When the "原文" toggle is on for this item, resolve the frozen full text to
+// pin as the provider front block. If pinned but nothing is frozen yet (user
+// toggled on before any fetch), extract once and freeze. Returns undefined
+// when not pinned or when no PDF text is available.
+async function resolvePinnedFullText(
+  itemID: number | null,
+  source: ContextSource,
+  policy: ContextPolicy,
+): Promise<string | undefined> {
+  if (itemID == null) return undefined;
+  if (!(await isPaperPinned(itemID))) return undefined;
+  const frozen = await getFrozenFullText(itemID);
+  if (frozen != null) return frozen;
+  const pdfText = await source.getFullText(itemID);
+  if (!pdfText) return undefined;
+  const text = truncateByTokenBudget(pdfText, policy.fullPdfTokenBudget);
+  await freezeFullText(itemID, text);
+  return text;
+}
+
 async function buildSystemContextOnly(
   itemID: number | null,
 ): Promise<{ systemPrompt: string }> {
@@ -4624,6 +4693,8 @@ function resetChatTaskForRetry(message: Message) {
 async function loadPersistedMessages(mount: HTMLElement, state: PanelState) {
   if (state.historyLoaded) return;
   const messages = await loadChatMessages(state.itemID);
+  const paperPinned =
+    state.itemID != null ? await isPaperPinned(state.itemID) : false;
   if (states.get(mount) !== state || state.sending) return;
   // Tombstone any task that was running/queued when Zotero last closed.
   // Without this, a `task` lacking both `completedAt` and `cancelledAt`
@@ -4636,6 +4707,7 @@ async function loadPersistedMessages(mount: HTMLElement, state: PanelState) {
   const cancelledStale = cancelStaleQueuedTasks(messages);
   state.messages = messages;
   state.historyLoaded = true;
+  state.paperPinned = paperPinned;
   state.scrollToBottom = true;
   if (cancelledStale > 0) {
     void saveChatMessages(state.itemID, state.messages);

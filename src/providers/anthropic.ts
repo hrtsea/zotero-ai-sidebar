@@ -8,10 +8,31 @@ import {
   type TranslateThinking,
 } from '../settings/types';
 
+// Builds the Anthropic `system` array. The system prompt is block 1
+// (ephemeral cache). When a front block (paper full text) is present it
+// becomes block 2 with its own 1h-TTL cache breakpoint — the feature exists
+// to survive the user's reading time between turns.
+export function toAnthropicSystem(
+  systemPrompt: string,
+  pinnedFullText: string | undefined,
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ];
+  if (pinnedFullText) {
+    blocks.push({
+      type: 'text',
+      text: `[Paper full text]\n${pinnedFullText}`,
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+  }
+  return blocks;
+}
+
 // Anthropic Messages-streaming adapter.
 // GOTCHA: this adapter does NOT yet implement the agent tool loop. The
 // Codex-style harness/tools flow currently runs only on the OpenAI Responses
-// path. `_options.tools` is intentionally ignored — switching providers in
+// path. `options.tools` is intentionally ignored — switching providers in
 // the sidebar disables Zotero tools for that turn.
 // REF: providers/openai.ts for the tool-loop reference implementation.
 export class AnthropicProvider implements Provider {
@@ -20,7 +41,7 @@ export class AnthropicProvider implements Provider {
     systemPrompt: string,
     preset: ModelPreset,
     signal: AbortSignal,
-    _options: ProviderStreamOptions = {},
+    options: ProviderStreamOptions = {},
   ): AsyncIterable<StreamChunk> {
     const client = new Anthropic({
       apiKey: preset.apiKey,
@@ -31,14 +52,7 @@ export class AnthropicProvider implements Provider {
     const baseRequest = {
       model: preset.model,
       max_tokens: preset.maxTokens,
-      // WHY: mark the system prompt as `ephemeral` so Anthropic prompt
-      // caching kicks in across turns — the prompt is large (paper
-      // metadata + context plan) and stable for the duration of the
-      // current Zotero item's chat thread.
-      // REF: Anthropic prompt-caching docs; cache_control TTL is short.
-      system: [
-        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
-      ],
+      system: toAnthropicSystem(systemPrompt, options.pinnedFullText),
       messages: toAnthropicMessages(messages),
     };
     // Thinking config is opt-in: the translator writes `extras.translateThinking`
