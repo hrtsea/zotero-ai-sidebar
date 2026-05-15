@@ -47,6 +47,8 @@ export function toApiMessages(
               includeTurnInstructions: currentContext?.message === message,
             },
           )
+        : message.role === "user" && message.context?.promptCacheLedger
+          ? formatUserMessageWithPromptLedger(message)
         : message.content,
     ...(message.images?.length ? { images: message.images } : {}),
   }));
@@ -81,6 +83,14 @@ export function formatUserMessageForApi(
   );
   if (!contextBlocks.length) return message.content;
   return [...contextBlocks, "[User question]", message.content].join("\n");
+}
+
+function formatUserMessageWithPromptLedger(message: Message): string {
+  const ledger = message.context?.promptCacheLedger;
+  if (!ledger) return message.content;
+  return [...formatPromptLedgerBlock(ledger), "[User question]", message.content].join(
+    "\n",
+  );
 }
 
 export function formatRetrievedPassages(passages: RetrievedPassage[]): string {
@@ -228,10 +238,9 @@ export function formatContextMarkdown(message: Message): string[] {
 }
 
 // Builds a compact, machine-friendly ledger of every prior turn's context
-// (mode, ranges, char counts, tool calls). WHY: handed to the model as a
-// system-prompt appendix so it can refer to "you already saw passage
-// 4500-5800 in turn 3" without us re-sending the bytes. This is the
-// project's substitute for Codex `previous_response_id` chaining.
+// (mode, ranges, char counts, tool calls). WHY: captured into the next user
+// turn so prompts grow append-only; the model can still refer to "you already
+// saw passage 4500-5800 in turn 3" without rewriting the system prompt.
 export function formatContextLedger(messages: Message[]): string {
   const lines: string[] = [];
   messages.forEach((message, index) => {
@@ -337,6 +346,9 @@ function formatContextBlocks(
   if (!context && !fullText) return [];
 
   const blocks: string[] = [];
+  if (context?.promptCacheLedger) {
+    blocks.push(...formatPromptLedgerBlock(context.promptCacheLedger), "");
+  }
   if (context?.selectedText) {
     blocks.push("[Selected PDF text]", context.selectedText, "");
     if (includeTurnInstructions) {
@@ -385,6 +397,14 @@ function formatContextBlocks(
     );
   }
   return blocks;
+}
+
+function formatPromptLedgerBlock(ledger: string): string[] {
+  return [
+    "[Previous context ledger]",
+    "This compact ledger records previous context metadata that may no longer be visible. Use it as a planning map for tool choice, including source identity, ranges, and whether prior snippets can be reloaded with chat_get_previous_context. Do not treat the ledger itself as source text.",
+    ledger || "none",
+  ];
 }
 
 function selectedTextHandlingInstruction(): string {

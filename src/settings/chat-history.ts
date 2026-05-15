@@ -191,18 +191,35 @@ function normalizeMessages(value: unknown): Message[] {
     const images = normalizeImages(m.images);
     const annotationDraft = normalizeAnnotationDraft(m.annotationDraft);
     const task = normalizeChatTask(m.task);
+    const usage = normalizeMessageUsage(m.usage);
     return [{
       role: m.role,
       content: m.content,
       ...(typeof m.thinking === 'string' && m.thinking
         ? { thinking: m.thinking }
         : {}),
+      ...(usage ? { usage } : {}),
       ...(images.length ? { images } : {}),
       ...(isRecord(m.context) ? { context: m.context as Message['context'] } : {}),
       ...(annotationDraft ? { annotationDraft } : {}),
       ...(task ? { task } : {}),
     }];
   });
+}
+
+function normalizeMessageUsage(value: unknown): Message['usage'] | null {
+  if (!isRecord(value)) return null;
+  const input = optionalNumber(value.input) ?? 0;
+  const output = optionalNumber(value.output) ?? 0;
+  const cacheRead = optionalNumber(value.cacheRead);
+  if (input <= 0 && output <= 0 && (cacheRead == null || cacheRead <= 0)) {
+    return null;
+  }
+  return {
+    input,
+    output,
+    ...(cacheRead != null ? { cacheRead } : {}),
+  };
 }
 
 function normalizeChatTask(value: unknown): ChatTaskMeta | null {

@@ -8,7 +8,11 @@ import type { ModelPreset } from '../../src/settings/types';
 import type { StreamChunk } from '../../src/providers/types';
 
 const requestLog = vi.hoisted(() => ({
-  requests: [] as Array<{ input?: unknown; tools?: unknown[] }>,
+  requests: [] as Array<{
+    input?: unknown;
+    tools?: unknown[];
+    prompt_cache_key?: string;
+  }>,
 }));
 
 vi.mock('openai', () => {
@@ -157,6 +161,7 @@ describe('OpenAIProvider', () => {
       { type: 'text_delta', text: ' there' },
       { type: 'usage', input: 7, output: 2, cacheRead: 0 },
     ]);
+    expect(requestLog.requests[0].prompt_cache_key).toBe('zai:openai');
   });
 
   it('executes local tools and feeds outputs back to the model', async () => {
@@ -202,7 +207,7 @@ describe('OpenAIProvider', () => {
         context: { planMode: 'full_pdf', fullTextChars: 7 },
       },
       { type: 'text_delta', text: 'Summary from tool output' },
-      { type: 'usage', input: 10, output: 4, cacheRead: 0 },
+      { type: 'usage', input: 10, output: 4 },
     ]);
     expect(requestLog.requests).toHaveLength(2);
     expect(requestLog.requests[1].input).toEqual([
@@ -314,7 +319,7 @@ describe('OpenAIProvider', () => {
         summary: 'MCP 工具列表已获取: 1 个工具',
       },
       { type: 'text_delta', text: 'Web result' },
-      { type: 'usage', input: 11, output: 3, cacheRead: 0 },
+      { type: 'usage', input: 11, output: 3 },
     ]);
   });
 

@@ -4,14 +4,40 @@ import type { ToolSettings } from '../settings/tool-settings';
 
 export type MessageRole = 'user' | 'assistant';
 
+export interface MindmapNode {
+  id: string;
+  label: string;
+  type?: "root" | "section" | "point";
+}
+
+export interface MindmapEdge {
+  source: string;
+  target: string;
+}
+
+export interface MindmapData {
+  title?: string;
+  nodes: MindmapNode[];
+  edges: MindmapEdge[];
+  source?: string;
+}
+
 export interface Message {
   role: MessageRole;
   content: string;
   thinking?: string;
+  usage?: MessageUsage;
   images?: MessageImage[];
   context?: MessageContext;
   annotationDraft?: AssistantAnnotationDraft;
+  mindmap?: MindmapData;
   task?: ChatTaskMeta;
+}
+
+export interface MessageUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
 }
 
 export type ChatTaskKind = 'general' | 'selection' | 'full_text' | 'reading_route';
@@ -84,6 +110,7 @@ export interface ProviderStreamOptions {
   maxToolIterations?: number;
   permissionMode?: AgentPermissionMode;
   toolSettings?: ToolSettings;
+  promptCacheKey?: string;
 }
 
 export type StreamChunk =

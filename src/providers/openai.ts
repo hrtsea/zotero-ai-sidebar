@@ -153,6 +153,7 @@ export class OpenAIProvider implements Provider {
           instructions: systemPrompt,
           input: toOpenAIInput(messages) as never,
           ...maxOutputTokensParam(preset),
+          ...promptCacheParams(preset, options),
           reasoning: reasoningOptions(preset),
           stream: true,
           store: false,
@@ -203,6 +204,7 @@ export class OpenAIProvider implements Provider {
             max_tokens: preset.maxTokens,
             stream: true,
             stream_options: { include_usage: true },
+            ...promptCacheParams(preset, options),
             ...(chatTools ? { tools: chatTools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
             ...chatCompletionReasoningParam(preset),
           } as never,
@@ -259,9 +261,10 @@ export class OpenAIProvider implements Provider {
         return;
       }
 
+      if (usage) yield chatUsageChunk(usage);
+
       // No tool calls — natural exit.
       if (finishReason !== 'tool_calls' || toolCallsAcc.size === 0) {
-        if (usage) yield chatUsageChunk(usage);
         return;
       }
 
@@ -325,6 +328,7 @@ export class OpenAIProvider implements Provider {
             instructions: systemPrompt,
             input,
             ...maxOutputTokensParam(preset),
+            ...promptCacheParams(preset, options),
             reasoning: reasoningOptions(preset),
             tools: openAITools,
             tool_choice: 'auto',
@@ -425,9 +429,10 @@ export class OpenAIProvider implements Provider {
 
       if (failed) return;
 
+      if (usage) yield usageChunk(usage);
+
       // Natural exit: model produced text-only output. No tool calls ⇒ done.
       if (calls.length === 0) {
-        if (usage) yield usageChunk(usage);
         return;
       }
 
@@ -728,6 +733,34 @@ function maxOutputTokensParam(preset: ModelPreset): {
     : { max_output_tokens: preset.maxTokens };
 }
 
+function promptCacheParams(
+  preset: ModelPreset,
+  options: ProviderStreamOptions,
+): { prompt_cache_key?: string } {
+  if (!isOfficialOpenAIEndpoint(preset)) return {};
+  const key = stablePromptCacheKey(options.promptCacheKey);
+  return key ? { prompt_cache_key: key } : {};
+}
+
+function isOfficialOpenAIEndpoint(preset: ModelPreset): boolean {
+  const baseUrl = preset.baseUrl.trim();
+  if (!baseUrl) return true;
+  try {
+    return new URL(baseUrl).hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+function stablePromptCacheKey(value: string | undefined): string {
+  const cleaned = (value ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9:_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 96);
+  return cleaned || 'zai:openai';
+}
+
 function responseEventToChunk(event: ResponseEvent): StreamChunk | null {
   switch (event.type) {
     case 'response.created':
@@ -763,7 +796,9 @@ function usageChunk(usage: ResponseUsage): StreamChunk {
     type: 'usage',
     input: usage.input_tokens ?? 0,
     output: usage.output_tokens ?? 0,
-    cacheRead: usage.input_tokens_details?.cached_tokens ?? 0,
+    ...(typeof usage.input_tokens_details?.cached_tokens === 'number'
+      ? { cacheRead: usage.input_tokens_details.cached_tokens }
+      : {}),
   };
 }
 
@@ -801,6 +836,9 @@ interface ChatCompletionEvent {
 interface ChatCompletionUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
 }
 
 function toChatMessages(messages: Message[], systemPrompt: string): ChatMessage[] {
@@ -840,11 +878,20 @@ function chatCompletionReasoningParam(preset: ModelPreset): Record<string, unkno
 }
 
 function chatUsageChunk(usage: ChatCompletionUsage): StreamChunk {
+  const deepSeekInput =
+    (usage.prompt_cache_hit_tokens ?? 0) +
+    (usage.prompt_cache_miss_tokens ?? 0);
+  const cacheRead =
+    typeof usage.prompt_cache_hit_tokens === 'number'
+      ? usage.prompt_cache_hit_tokens
+      : typeof usage.prompt_tokens_details?.cached_tokens === 'number'
+        ? usage.prompt_tokens_details.cached_tokens
+        : undefined;
   return {
     type: 'usage',
-    input: usage.prompt_tokens ?? 0,
+    input: usage.prompt_tokens ?? deepSeekInput,
     output: usage.completion_tokens ?? 0,
-    cacheRead: 0,
+    ...(cacheRead != null ? { cacheRead } : {}),
   };
 }
 

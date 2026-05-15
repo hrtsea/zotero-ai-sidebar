@@ -56,6 +56,11 @@
       @media (max-width: 760px) { #zotero-ai-sidebar-tool-settings .zai-model-control { grid-template-columns: 1fr; } }
       #zotero-ai-sidebar-tool-settings .zai-inline { display: flex; align-items: center; gap: 8px; }
       #zotero-ai-sidebar-tool-settings .zai-prompt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 4px; font-weight: 700; }
+      #zotero-ai-sidebar-tool-settings .zai-prompt-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+      #zotero-ai-sidebar-tool-settings .zai-prompt-default-state { border: 1px solid rgba(80,70,55,0.16); border-radius: 999px; padding: 1px 7px; background: rgba(90,90,90,0.08); color: #666; font-size: 11px; font-weight: 700; white-space: nowrap; }
+      #zotero-ai-sidebar-tool-settings .zai-prompt-default-state[data-state="default"] { border-color: rgba(63,132,88,0.28); background: rgba(63,132,88,0.12); color: #2f7046; }
+      #zotero-ai-sidebar-tool-settings .zai-prompt-default-state[data-state="custom"] { border-color: rgba(176,117,24,0.26); background: rgba(176,117,24,0.12); color: #8a5a12; }
+      #zotero-ai-sidebar-tool-settings .zai-prompt-default-state[data-state="dirty"] { border-color: rgba(203,91,42,0.30); background: rgba(203,91,42,0.13); color: #a4471b; }
       #zotero-ai-sidebar-tool-settings .zai-prompt-option { margin: 8px 0 6px; padding: 8px 10px; border: 1px solid rgba(80, 70, 55, 0.12); border-radius: 8px; background: rgba(255,255,255,0.55); }
       #zotero-ai-sidebar-tool-settings .zai-prompt-option-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       #zotero-ai-sidebar-tool-settings .zai-prompt-option-head button { flex: 0 0 auto; padding: 4px 10px; }
@@ -217,7 +222,7 @@
       <html:div class="zai-pref-actions">
         <html:button id="zai-custom-prompt-add" type="button">+ 新增按钮</html:button>
         <html:button id="zai-prompt-save" type="button">保存提示词</html:button>
-        <html:button id="zai-prompt-reset" type="button">Reset 默认提示词</html:button>
+        <html:button id="zai-prompt-reset" type="button">恢复全部内置默认</html:button>
         <html:span id="zai-prompt-status" class="zai-pref-status"></html:span>
       </html:div>
     </html:div>

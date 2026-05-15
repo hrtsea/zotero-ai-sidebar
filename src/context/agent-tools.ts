@@ -1,4 +1,9 @@
-import type { AgentTool, Message, ToolExecutionResult } from "../providers/types";
+import type {
+  AgentTool,
+  Message,
+  MindmapData,
+  ToolExecutionResult,
+} from "../providers/types";
 import type { ContextSource, ItemMetadata } from "./builder";
 import { formatAnnotations, formatRetrievedPassages } from "./message-format";
 import { createPaperTools } from "./paper-tools";
@@ -45,6 +50,7 @@ export interface ToolFactoryOptions {
     created: boolean;
     usedBetterNotes: boolean;
   }>;
+  onMindmapReady?: (data: MindmapData) => void;
 }
 
 export interface ZoteroAgentToolSession {
@@ -256,6 +262,7 @@ export function createZoteroAgentToolSession(
         };
       },
     },
+    createDrawMindmapTool(options),
     ...createPaperTools(policy),
     createGetReaderPdfTextTool(policy, highlightSession),
     createGetCurrentPdfSelectionTool(options),
@@ -1043,6 +1050,96 @@ function createAppendToChildNoteTool(options: ToolFactoryOptions): AgentTool {
         const detail = err instanceof Error ? err.message : String(err);
         return errorResult(`Failed to write to Zotero child note: ${detail}`);
       }
+    },
+  };
+}
+
+function createDrawMindmapTool(options: ToolFactoryOptions): AgentTool {
+  return {
+    name: "draw_article_mindmap",
+    description:
+      "Render a visual flowchart (思维导图 / 流程图 / 结构图) showing the article's main thesis, structure, arguments, and key points. Call this when the user asks for 思维导图, 流程图, 结构图, 脉络图, mindmap, flowchart, or a visual overview of the article structure. Supply 'nodes' (each with id, label, and type: root|section|point) and 'edges' (source→target). Use type='root' for the central thesis, 'section' for major arguments or chapters, 'point' for supporting details.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Optional chart title, usually the article or paper title.",
+        },
+        nodes: {
+          type: "array",
+          description: "Graph nodes. Each node has an id, a display label, and an optional type.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Unique node identifier." },
+              label: { type: "string", description: "Display label (≤30 chars)." },
+              type: {
+                type: "string",
+                enum: ["root", "section", "point"],
+                description: "root: central thesis; section: major argument/chapter; point: detail.",
+              },
+            },
+            required: ["id", "label"],
+          },
+        },
+        edges: {
+          type: "array",
+          description: "Directed edges connecting nodes.",
+          items: {
+            type: "object",
+            properties: {
+              source: { type: "string", description: "Source node id." },
+              target: { type: "string", description: "Target node id." },
+            },
+            required: ["source", "target"],
+          },
+        },
+      },
+      required: ["nodes", "edges"],
+    },
+    execute: async (args) => {
+      const parsed = objectArgs(args);
+      const rawNodes = parsed.nodes;
+      const rawEdges = parsed.edges;
+      if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges)) {
+        return errorResult(
+          "draw_article_mindmap requires 'nodes' and 'edges' arrays.",
+        );
+      }
+      const nodes = rawNodes
+        .filter(
+          (n): n is Record<string, unknown> =>
+            n && typeof n === "object" && typeof n.id === "string" && typeof n.label === "string",
+        )
+        .map((n) => ({
+          id: n.id as string,
+          label: n.label as string,
+          type: (["root", "section", "point"].includes(n.type as string)
+            ? n.type
+            : "point") as "root" | "section" | "point",
+        }));
+      const edges = rawEdges
+        .filter(
+          (e): e is Record<string, unknown> =>
+            e &&
+            typeof e === "object" &&
+            typeof e.source === "string" &&
+            typeof e.target === "string",
+        )
+        .map((e) => ({ source: e.source as string, target: e.target as string }));
+      if (nodes.length === 0) {
+        return errorResult("draw_article_mindmap requires at least one node.");
+      }
+      const title =
+        typeof parsed.title === "string" ? parsed.title : undefined;
+      const data: MindmapData = { title, nodes, edges };
+      options.onMindmapReady?.(data);
+      return {
+        output: `[Mindmap rendered: ${nodes.length} nodes, ${edges.length} edges]`,
+        summary: `生成结构图 ${nodes.length} 个节点`,
+        context: { planMode: "mindmap" },
+      };
     },
   };
 }

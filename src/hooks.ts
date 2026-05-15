@@ -216,7 +216,7 @@ function setupPreferencesPane(win: Window): void {
   });
   byID<HTMLButtonElement>(doc, 'zai-prompt-reset')?.addEventListener('click', () => {
     populateBuiltInPromptControls(doc, DEFAULT_QUICK_PROMPT_SETTINGS);
-    savePromptControls(doc, '已恢复默认提示词并立即生效。');
+    savePromptControls(doc, '已恢复当前插件内置默认提示词并立即生效。');
   });
 
   byID<HTMLButtonElement>(doc, 'zai-mcp-add')?.addEventListener('click', () => {
@@ -1682,17 +1682,58 @@ function builtInPromptControl(
 ): HTMLElement {
   const wrap = el(doc, 'div', 'zai-built-in-prompt');
   const head = el(doc, 'div', 'zai-prompt-head');
-  head.append(el(doc, 'span', '', label));
-  const reset = button(doc, 'Reset');
-  reset.addEventListener('click', () => {
-    const area = wrap.querySelector('textarea') as HTMLTextAreaElement | null;
-    if (area) area.value = defaultValue;
-  });
-  head.append(reset);
+  const title = el(doc, 'span', 'zai-prompt-title');
+  const state = el(doc, 'span', 'zai-prompt-default-state');
+  title.append(el(doc, 'span', '', label), state);
+  head.append(title);
+  const reset = button(doc, '恢复内置默认');
+  reset.title = '把当前编辑框恢复为这个插件版本内置的默认提示词；需要点击“保存提示词”才会生效。';
   const area = textarea(doc, value);
   area.dataset.prompt = field;
+  area.dataset.savedValue = value;
+  const updateState = () => {
+    updatePromptDefaultState(area, state, defaultValue);
+  };
+  reset.addEventListener('click', () => {
+    area.value = defaultValue;
+    updateState();
+    setStatus(
+      doc,
+      'zai-prompt-status',
+      `${label} 已填入当前插件内置默认；点击“保存提示词”后才会更新本地生效。`,
+    );
+  });
+  area.addEventListener('input', updateState);
+  updateState();
+  head.append(reset);
   wrap.append(head, area);
   return wrap;
+}
+
+function updatePromptDefaultState(
+  area: HTMLTextAreaElement,
+  state: HTMLElement,
+  defaultValue: string,
+): void {
+  const savedValue = area.dataset.savedValue ?? '';
+  const current = area.value;
+  const nextState =
+    current !== savedValue ? 'dirty' : current === defaultValue ? 'default' : 'custom';
+  const label =
+    nextState === 'dirty'
+      ? '编辑未保存'
+      : nextState === 'default'
+        ? '本地=内置默认'
+        : '本地已自定义';
+  const title =
+    nextState === 'dirty'
+      ? '当前编辑框内容还没有保存；点击“保存提示词”后才会成为本地提示词。'
+      : nextState === 'default'
+        ? '已保存的本地提示词与当前插件内置默认一致。'
+        : '已保存的本地提示词不同于当前插件内置默认；点击“恢复内置默认”可改回。';
+  state.textContent = label;
+  state.dataset.state = nextState;
+  state.title = title;
 }
 
 function addCustomPromptRow(

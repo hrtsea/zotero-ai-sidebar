@@ -5,6 +5,12 @@ export const NOTE_PDF_SELECTION_HASH_MARKER = "#zaiSelection=";
 export const NOTE_PDF_LOCATION_HASH_MARKER = "#zaiLocation=";
 export const NOTE_PDF_QUOTE_HASH_MARKER = "#zaiQuote=";
 
+export interface PdfQuoteNoteLinkData {
+  quote: string;
+  sourceItemID?: number;
+  preferredAttachmentID?: number;
+}
+
 export function pdfSelectionFromNoteLink(
   link: HTMLAnchorElement,
 ): PdfSelectionLocator | null {
@@ -26,10 +32,16 @@ export function pdfLocationFromNoteLink(
 }
 
 export function pdfQuoteFromNoteLink(link: HTMLAnchorElement): string {
+  return (pdfQuoteDataFromNoteLink(link)?.quote || "").trim();
+}
+
+export function pdfQuoteDataFromNoteLink(
+  link: HTMLAnchorElement,
+): PdfQuoteNoteLinkData | null {
   return (
-    link.getAttribute("data-zai-pdf-quote") ||
-    pdfQuoteFromNoteHref(link.href)
-  ).trim();
+    pdfQuoteDataFromRaw(pdfQuoteFromNoteHrefRaw(link.href)) ||
+    pdfQuoteDataFromRaw(link.getAttribute("data-zai-pdf-quote"))
+  );
 }
 
 export function pdfSelectionFromNoteHref(
@@ -64,6 +76,16 @@ export function pdfLocationJSONFromNoteHref(href: string): string {
 }
 
 export function pdfQuoteFromNoteHref(href: string): string {
+  return pdfQuoteDataFromNoteHref(href)?.quote ?? "";
+}
+
+export function pdfQuoteDataFromNoteHref(
+  href: string,
+): PdfQuoteNoteLinkData | null {
+  return pdfQuoteDataFromRaw(pdfQuoteFromNoteHrefRaw(href));
+}
+
+function pdfQuoteFromNoteHrefRaw(href: string): string {
   return pdfDataJSONFromNoteHref(href, NOTE_PDF_QUOTE_HASH_MARKER);
 }
 
@@ -76,6 +98,28 @@ function pdfDataJSONFromNoteHref(href: string, marker: string): string {
   } catch {
     return "";
   }
+}
+
+function pdfQuoteDataFromRaw(raw: string | null): PdfQuoteNoteLinkData | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const data = parsed as Record<string, unknown>;
+      const quote = typeof data.quote === "string" ? data.quote : "";
+      if (!quote) return { quote: raw };
+      const sourceItemID = finiteNumber(data.sourceItemID);
+      const preferredAttachmentID = finiteNumber(data.preferredAttachmentID);
+      return {
+        quote,
+        ...(sourceItemID != null ? { sourceItemID } : {}),
+        ...(preferredAttachmentID != null ? { preferredAttachmentID } : {}),
+      };
+    }
+  } catch {
+    // Plain quotes continue to use the legacy string payload.
+  }
+  return { quote: raw };
 }
 
 export function noteHrefWithoutPdfData(href: string): string {

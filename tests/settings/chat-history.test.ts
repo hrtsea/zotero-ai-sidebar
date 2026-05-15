@@ -112,6 +112,42 @@ describe('chat history', () => {
     ]);
   });
 
+  it('preserves assistant token usage', async () => {
+    await saveChatMessages(42, [
+      {
+        role: 'assistant',
+        content: '回答',
+        usage: { input: 1234, output: 56, cacheRead: 789 },
+      },
+    ]);
+
+    expect(await loadChatMessages(42)).toEqual([
+      {
+        role: 'assistant',
+        content: '回答',
+        usage: { input: 1234, output: 56, cacheRead: 789 },
+      },
+    ]);
+  });
+
+  it('preserves missing cache usage as unknown', async () => {
+    await saveChatMessages(42, [
+      {
+        role: 'assistant',
+        content: '回答',
+        usage: { input: 100, output: 20 },
+      },
+    ]);
+
+    expect(await loadChatMessages(42)).toEqual([
+      {
+        role: 'assistant',
+        content: '回答',
+        usage: { input: 100, output: 20 },
+      },
+    ]);
+  });
+
   it('preserves local task queue metadata', async () => {
     await saveChatMessages(42, [
       {

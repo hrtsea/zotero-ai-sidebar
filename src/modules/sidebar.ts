@@ -121,6 +121,9 @@ import {
 } from "./debug-utils";
 import {
   firstPdfQuoteLocateCandidate,
+  pdfQuoteBlockLocateText,
+  pdfQuoteBlocks,
+  pdfQuoteLinkKey,
   pdfQuoteLocateCandidates,
 } from "./pdf-quote-utils";
 import {
@@ -131,6 +134,8 @@ import {
   pdfLocationFromNoteHref,
   pdfLocationFromNoteLink,
   pdfLocationJSONFromNoteHref,
+  pdfQuoteDataFromNoteHref,
+  pdfQuoteDataFromNoteLink,
   pdfQuoteFromNoteHref,
   pdfQuoteFromNoteLink,
   pdfSelectionForNoteData,
@@ -166,6 +171,17 @@ import {
   saveEditableSelection,
 } from "./note-html-utils";
 import { renderMarkdownInto } from "./markdown-render";
+import {
+  highlightReadingRouteKeyBullets,
+  locateReadingRouteReference,
+  readingRouteReferenceKey,
+  readingRouteReferenceKindFromData,
+  readingRouteReferenceLabels,
+  readingRouteReferenceParts,
+  type ReadingRouteReferenceKind,
+  uniqueStrings,
+} from "./reading-route-reference";
+import { renderMindmapBlock } from "./mindmap-render";
 import { clonePlainRecord, finiteNumber } from "./plain-utils";
 import {
   agentPermissionMode,
@@ -637,8 +653,7 @@ function renderToolbar(doc: Document, mount: HTMLElement, state: PanelState) {
         let systemPrompt: string | undefined;
         if (state.copyDebugContext) {
           try {
-            const ledger = formatContextLedger(state.messages);
-            const built = await buildSystemContextOnly(state.itemID, ledger);
+            const built = await buildSystemContextOnly(state.itemID);
             systemPrompt = built.systemPrompt;
           } catch {
             systemPrompt = undefined;
@@ -1902,6 +1917,48 @@ async function jumpToPdfLocationOnly(
   }
 }
 
+async function jumpToReadingRouteReference(
+  mount: HTMLElement,
+  state: PanelState,
+  label: string,
+  sourceItemID: number | null,
+  referenceKind?: ReadingRouteReferenceKind,
+): Promise<void> {
+  const win = mount.ownerDocument?.defaultView;
+  const reader = getReaderForAttachmentOrItem(win, sourceItemID, null);
+  if (!reader) {
+    setTempLoadMarkStatus(mount, "图表未打开");
+    return;
+  }
+
+  setTempLoadMarkStatus(mount, "图表定位中");
+  let pdfLocator: Awaited<ReturnType<typeof createPdfLocator>> | null = null;
+  try {
+    pdfLocator = await createPdfLocator(reader);
+    const result = await locateReadingRouteReference(pdfLocator, label);
+    if (!result) {
+      setTempLoadMarkStatus(mount, "图表未定位");
+      return;
+    }
+    const locator = pdfSelectionLocatorFromLocateResult(
+      pdfLocator.attachmentID,
+      result.matchedText || label,
+      result,
+    );
+    setTempLoadMarkStatus(mount, "图表定位");
+    await jumpToPdfLocationOnly(mount, state, locator, referenceKind);
+  } catch (err) {
+    setTempLoadMarkStatus(mount, "图表异常");
+    debugZai("reading-route.reference.jump.failed", {
+      error: errorMessage(err),
+      label,
+      sourceItemID,
+    });
+  } finally {
+    pdfLocator?.dispose();
+  }
+}
+
 function mountReaderSelectionPopupGuard(reader: unknown): { destroy(): void } {
   const guards: Array<{ destroy(): void }> = [];
   for (const view of activeReaderViews(reader as any)) {
@@ -2083,6 +2140,7 @@ async function navigateReaderToPdfSelectionPreview(
           clearHighlight: false,
           clearSelection: false,
         });
+        if (restored) centerReaderSelectionInView(view);
         if (restored) return true;
       } catch (err) {
         debugZai("task.pdf-selection-preview.direct-jump.failed", {
@@ -2105,6 +2163,7 @@ async function navigateReaderToPdfSelectionPreview(
       clearHighlight: false,
       clearSelection: false,
     });
+    if (restored) centerReaderSelectionInActiveViews(reader);
     return restored;
   } finally {
     destroyGuardAfterDelay(win, popupGuard, 1400);
@@ -2207,6 +2266,97 @@ function setReaderTextLayerSelection(view: any, selectionRanges: any[]): boolean
     });
     return false;
   }
+}
+
+type ReaderScrollContainer = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  getBoundingClientRect: () => DOMRect;
+};
+
+function centerReaderSelectionInActiveViews(reader: unknown): boolean {
+  for (const view of activeReaderViews(reader as any)) {
+    if (centerReaderSelectionInView(view)) return true;
+  }
+  return false;
+}
+
+function centerReaderSelectionInView(view: any): boolean {
+  const win = view?._iframeWindow as Window | undefined;
+  const selection = win?.getSelection?.();
+  if (!win || !selection || selection.rangeCount === 0) return false;
+
+  try {
+    const range = selection.getRangeAt(0);
+    const rect = firstVisibleRangeRect(range);
+    if (!rect) return false;
+
+    const container = readerScrollContainer(view);
+    if (container) {
+      const containerRect = container.getBoundingClientRect();
+      const target =
+        container.scrollTop +
+        rect.top -
+        containerRect.top -
+        Math.max(80, container.clientHeight * 0.35);
+      container.scrollTop = boundedScrollTop(container, target);
+      debugZai("task.pdf-selection-preview.centered", {
+        top: Math.round(container.scrollTop),
+      });
+      return true;
+    }
+
+    const target = win.scrollY + rect.top - Math.max(80, win.innerHeight * 0.35);
+    win.scrollTo(win.scrollX, Math.max(0, Math.round(target)));
+    return true;
+  } catch (err) {
+    debugZai("task.pdf-selection-preview.center.failed", {
+      error: errorMessage(err),
+    });
+    return false;
+  }
+}
+
+function firstVisibleRangeRect(range: Range): DOMRect | null {
+  const rectList = range.getClientRects();
+  const rects = Array.from(rectList ?? []).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  const rect = rects[0] ?? range.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 ? rect : null;
+}
+
+function readerScrollContainer(view: any): ReaderScrollContainer | null {
+  const win = view?._iframeWindow as Window | undefined;
+  const doc = win?.document;
+  return (
+    scrollContainerElement(win?.PDFViewerApplication?.pdfViewer?.container) ||
+    scrollContainerElement(doc?.getElementById("viewerContainer")) ||
+    scrollContainerElement(doc?.scrollingElement)
+  );
+}
+
+function scrollContainerElement(value: unknown): ReaderScrollContainer | null {
+  const node = value as Partial<ReaderScrollContainer> | null | undefined;
+  if (
+    !node ||
+    typeof node.scrollTop !== "number" ||
+    typeof node.scrollHeight !== "number" ||
+    typeof node.clientHeight !== "number" ||
+    typeof node.getBoundingClientRect !== "function"
+  ) {
+    return null;
+  }
+  return node as ReaderScrollContainer;
+}
+
+function boundedScrollTop(
+  container: ReaderScrollContainer,
+  target: number,
+): number {
+  const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+  return Math.min(maxTop, Math.max(0, Math.round(target)));
 }
 
 function readerTextLayerNodeOffset(
@@ -3586,10 +3736,9 @@ async function sendMessage(
   const rawSelectedText = options.fullTextHighlight || options.readingRoute
     ? ""
     : await getSelectedTextForPrompt(mount, state.itemID);
-  const selectionPayload = await buildSelectionPromptContext(
-    rawSelectedText,
-    state.itemID,
-  );
+  const selectionPayload = options.explainSelection
+    ? { selectedText: rawSelectedText, context: {} }
+    : await buildSelectionPromptContext(rawSelectedText, state.itemID);
   const selectedText = selectionPayload.selectedText;
   const quickPromptSettings = loadQuickPromptSettings(zoteroPrefs());
   const selectedSnapshot = cloneSelectionAnnotationDraft(
@@ -3653,7 +3802,9 @@ async function sendMessage(
       : {}),
   };
   const shouldQueue = state.sending;
-  const history = shouldQueue ? [] : state.messages.slice();
+  const isolatedExplainSelection = options.explainSelection === true;
+  const history =
+    shouldQueue || isolatedExplainSelection ? [] : state.messages.slice();
   state.messages.push(userMessage);
   state.draftText = "";
   state.draftSelectionStart = 0;
@@ -3675,6 +3826,7 @@ async function sendMessage(
     annotationColorEnabled: annotationSuggestionEnabled,
     fullTextHighlight: options.fullTextHighlight,
     readingRoute: options.readingRoute,
+    isolatedHistory: isolatedExplainSelection,
     taskID: userMessage.task?.id,
   });
   void processNextQueuedChatTask(mount, state);
@@ -3692,7 +3844,8 @@ async function processNextQueuedChatTask(
       if (!next) break;
       const userMessage = state.messages[next.userIndex];
       if (!userMessage || userMessage.role !== "user") break;
-      const history = state.messages.slice(0, next.userIndex);
+      const isolatedHistory = userMessage.context?.explainSelection === true;
+      const history = isolatedHistory ? [] : state.messages.slice(0, next.userIndex);
       // Restore whatever annotation context was captured at queue time.
       // INVARIANT: a queued message always uses the PDF selection that was
       // active when it was submitted, NEVER the live selection now —
@@ -3712,6 +3865,7 @@ async function processNextQueuedChatTask(
           userMessage.context?.queuedAnnotationColorEnabled === true,
         fullTextHighlight: userMessage.task?.kind === "full_text",
         readingRoute: userMessage.task?.kind === "reading_route",
+        isolatedHistory,
         taskID: userMessage.task?.id,
       });
     }
@@ -3893,6 +4047,7 @@ interface StreamAssistantOptions {
   annotationColorEnabled?: boolean;
   fullTextHighlight?: boolean;
   readingRoute?: boolean;
+  isolatedHistory?: boolean;
   taskID?: string;
 }
 
@@ -3951,7 +4106,8 @@ async function streamAssistant(
   let toolSession: ZoteroAgentToolSession | null = null;
 
   try {
-    const contextLedger = formatContextLedger(history);
+    const effectiveHistory = options.isolatedHistory ? [] : history;
+    const contextLedger = formatContextLedger(effectiveHistory);
     if (userMessage.context?.selectedText) {
       const hasNearbyContext = !!userMessage.context.retrievedPassages?.length;
       userMessage.context = {
@@ -3964,7 +4120,7 @@ async function streamAssistant(
       };
     }
     const retainedStats = retainedContextStats(
-      [...history, userMessage],
+      [...effectiveHistory, userMessage],
       userMessage,
       contextPolicy,
     );
@@ -3975,10 +4131,13 @@ async function streamAssistant(
         retainedContextChars: retainedStats.chars,
       };
     }
-    const baseContext = await buildSystemContextOnly(
-      state.itemID,
-      contextLedger,
-    );
+    if (!options.isolatedHistory && contextLedger !== "none") {
+      userMessage.context = {
+        ...userMessage.context,
+        promptCacheLedger: contextLedger,
+      };
+    }
+    const baseContext = await buildSystemContextOnly(state.itemID);
     // Build a fresh tool session per turn. WHY per-turn (not cached):
     // - Reader's PDF.js text layer can change between turns (user opens a
     //   different attachment); a stale locator would point at the wrong PDF.
@@ -3989,7 +4148,7 @@ async function streamAssistant(
       source: zoteroContextSource,
       itemID: state.itemID,
       policy: contextPolicy,
-      previousMessages: history,
+      previousMessages: effectiveHistory,
       selectionAnnotation: () => getStoredSelectionAnnotation(state.itemID),
       fullTextHighlight: options.fullTextHighlight,
       annotationColorGuide: loadToolSettings(zoteroPrefs()).annotationColorGuide,
@@ -3999,6 +4158,10 @@ async function streamAssistant(
       // is selected at call time (not at session-creation time). Refresh
       // the visible note panel after the write so the user sees the
       // append immediately, matching the manual button's UX.
+      onMindmapReady: (data) => {
+        const idx = state.activeAssistantIndex;
+        if (idx != null) state.messages[idx].mindmap = data;
+      },
       appendToChildNote: async (content) => {
         const noteScroll = captureVisibleNoteScrollForDocument(
           mount.ownerDocument!,
@@ -4026,7 +4189,7 @@ async function streamAssistant(
     renderPanel(mount, state);
 
     const messagesForApi: Message[] = toApiMessages(
-      [...history, userMessage],
+      [...effectiveHistory, userMessage],
       {
         message: userMessage,
       },
@@ -4043,6 +4206,7 @@ async function streamAssistant(
         maxToolIterations: contextPolicy.maxToolIterations,
         permissionMode: state.agentPermissionMode,
         toolSettings: loadToolSettings(zoteroPrefs()),
+        promptCacheKey: buildPromptCacheKey(preset, state.itemID),
       },
     )) {
       if (chunk.type === "text_delta") {
@@ -4073,6 +4237,9 @@ async function streamAssistant(
       } else if (chunk.type === "status") {
         state.activeAssistantStage = "waiting_model";
         state.activeAssistantDetail = chunk.message;
+        updateMessageBubble(mount, assistantIndex, assistant);
+      } else if (chunk.type === "usage") {
+        assistant.usage = mergeMessageUsage(assistant.usage, chunk);
         updateMessageBubble(mount, assistantIndex, assistant);
       } else if (chunk.type === "error") {
         state.activeAssistantDetail = undefined;
@@ -4137,6 +4304,21 @@ function shouldSaveReadingRoute(
     !userMessage.task?.error &&
     !userMessage.task?.cancelledAt
   );
+}
+
+function mergeMessageUsage(
+  current: Message["usage"] | undefined,
+  next: { input: number; output: number; cacheRead?: number },
+): Message["usage"] {
+  const cacheRead =
+    current?.cacheRead == null && next.cacheRead == null
+      ? undefined
+      : (current?.cacheRead ?? 0) + Math.max(0, next.cacheRead ?? 0);
+  return {
+    input: (current?.input ?? 0) + Math.max(0, next.input || 0),
+    output: (current?.output ?? 0) + Math.max(0, next.output || 0),
+    ...(cacheRead != null ? { cacheRead } : {}),
+  };
 }
 
 function readingRouteProgressMessage(generatedChars: number): string {
@@ -4265,30 +4447,39 @@ function configuredAnnotationColors(): Set<string> {
 
 async function buildSystemContextOnly(
   itemID: number | null,
-  contextLedger: string,
 ): Promise<{ systemPrompt: string }> {
   const ctx = await buildContext(zoteroContextSource, itemID, 0);
   return {
-    systemPrompt: contextAwareSystemPrompt(ctx.systemPrompt, contextLedger),
+    systemPrompt: contextAwareSystemPrompt(ctx.systemPrompt),
   };
 }
 
 // Builds the system prompt sent to the model each turn.
-// Three sections, in order:
+// Two static sections, in order:
 //   1. Item-metadata block (from buildContext): title/authors/year/abstract.
 //   2. "Agent policy" block: tells the model what tools exist and that the
 //      harness — not the model — enforces budgets. Plain English so we
 //      don't hide tool semantics in JSON schema alone.
-//   3. Ledger: machine-readable record of past turns' context (chars
-//      sent, tool calls, plan modes). Marked "not currently attached"
-//      so the model treats it as memory, not source material.
-// REF: docs/HARNESS_ENGINEERING.md "Prompt Assembly".
+// Dynamic context ledgers are attached to user turns instead of this prompt,
+// matching Codex's append-only prefix strategy for prompt caching.
 function contextAwareSystemPrompt(
   systemPrompt: string,
-  contextLedger: string,
 ): string {
   const toolManual = toolManualWithConfiguredGuides();
-  return `${systemPrompt}\n\n${toolManual}\n\nThe ledger below records previous context metadata that may no longer be visible. Use it as a planning map for tool choice, including source identity, ranges, and whether prior snippets can be reloaded with chat_get_previous_context. Do not treat the ledger itself as source text. The model decides whether to answer from current conversation, reload prior chat context, call targeted tools, or fetch fresh text.\n\nPreviously sent context ledger (not currently attached):\n${contextLedger}`;
+  return `${systemPrompt}\n\n${toolManual}`;
+}
+
+function buildPromptCacheKey(
+  preset: ModelPreset,
+  itemID: number | null,
+): string {
+  return [
+    "zai",
+    preset.provider,
+    preset.id || "preset",
+    preset.model || "model",
+    itemID != null ? `item-${itemID}` : "global",
+  ].join(":");
 }
 
 function toolManualWithConfiguredGuides(): string {
@@ -5865,7 +6056,20 @@ function bubble(
   const body = el(doc, "div", "bubble-body");
   renderMarkdownInto(body, message.content || (progress ? " " : ""));
   scheduleAssistantPdfQuoteLinks(body, mount, state, message, index);
+  if (message.role === "assistant" && message.mindmap) {
+    body.append(renderMindmapBlock(doc, message.mindmap));
+  }
   root.append(body);
+  if (message.role === "assistant" && message.usage) {
+    root.append(renderMessageUsage(doc, message.usage));
+  }
+  if (message.role === "assistant" && message.content.trim()) {
+    const rawPre = doc.createElement("pre");
+    rawPre.className = "bubble-raw";
+    rawPre.textContent = message.content;
+    rawPre.style.display = "none";
+    root.append(rawPre);
+  }
   if (message.role === "assistant" && message.annotationDraft) {
     root.append(
       renderAnnotationSuggestion(
@@ -5878,6 +6082,96 @@ function bubble(
     );
   }
   return root;
+}
+
+function renderMessageUsage(
+  doc: Document,
+  usage: NonNullable<Message["usage"]>,
+): HTMLElement {
+  const breakdown = messageUsageBreakdown(usage);
+  const row = el(doc, "div", "bubble-usage");
+  row.title = [
+    "按单价桶展示：缓存命中输入、缓存未命中输入、输出通常是不同单价。",
+    `Input raw: ${formatTokenCount(breakdown.rawInput)}`,
+    breakdown.cacheReturned
+      ? `Input cache hit: ${formatTokenCount(breakdown.cacheHit)}`
+      : "Input cache hit: 服务端未返回",
+    breakdown.cacheReturned
+      ? `Input cache miss: ${formatTokenCount(breakdown.cacheMiss)}`
+      : `Input cache miss: ${formatTokenCount(breakdown.cacheMiss)}`,
+    `Output: ${formatTokenCount(breakdown.output)}`,
+    breakdown.cacheRate != null ? `Cache hit rate: ${breakdown.cacheRate}%` : "",
+    `Token total: ${formatTokenCount(breakdown.total)}（仅供核对，不作为计价汇总）`,
+    `统计口径: ${breakdown.mode}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  row.textContent = breakdown.cacheReturned
+    ? [
+        `Input cache hit ${formatTokenCount(breakdown.cacheHit)}`,
+        `Input cache miss ${formatTokenCount(breakdown.cacheMiss)}`,
+        `Output ${formatTokenCount(breakdown.output)}`,
+        `Cache hit rate ${breakdown.cacheRate}%`,
+      ].join(" · ")
+    : [
+        `Input ${formatTokenCount(breakdown.rawInput)}`,
+        `Output ${formatTokenCount(breakdown.output)}`,
+        "Cache hit 未返回",
+      ].join(" · ");
+  return row;
+}
+
+function messageUsageBreakdown(usage: NonNullable<Message["usage"]>): {
+  rawInput: number;
+  cacheReturned: boolean;
+  cacheHit: number;
+  cacheMiss: number;
+  output: number;
+  total: number;
+  cacheRate: number | null;
+  mode: string;
+} {
+  const rawInput = Math.max(0, usage.input || 0);
+  const output = Math.max(0, usage.output || 0);
+  if (usage.cacheRead == null) {
+    return {
+      rawInput,
+      cacheReturned: false,
+      cacheHit: 0,
+      cacheMiss: rawInput,
+      output,
+      total: rawInput + output,
+      cacheRate: null,
+      mode: "服务端未返回缓存字段",
+    };
+  }
+
+  const cacheHit = Math.max(0, usage.cacheRead || 0);
+  // Official OpenAI-style usage reports cached tokens as a subset of input.
+  // Some compatible relays report `input` as cache-miss tokens and cache
+  // reads separately. Use the only interpretation that keeps hit rate <=100%.
+  const officialLike = cacheHit <= rawInput;
+  const cacheMiss = officialLike ? rawInput - cacheHit : rawInput;
+  const inputTotal = cacheHit + cacheMiss;
+  const cacheRate =
+    inputTotal > 0 ? Math.round((cacheHit / inputTotal) * 100) : 0;
+  return {
+    rawInput,
+    cacheReturned: true,
+    cacheHit,
+    cacheMiss,
+    output,
+    total: inputTotal + output,
+    cacheRate,
+    mode: officialLike
+      ? "官方口径：缓存命中包含在输入 tokens 内"
+      : "兼容口径：输入 tokens 视为未命中，缓存命中单独返回",
+  };
+}
+
+function formatTokenCount(value: number): string {
+  return Math.max(0, Math.round(value)).toLocaleString("en-US");
 }
 
 function pdfSelectionForAssistantMessage(
@@ -5903,8 +6197,19 @@ function scheduleAssistantPdfQuoteLinks(
   const sourceSelection = pdfSelectionForAssistantMessage(state, index);
   installPdfQuoteButtonsInElement(
     body,
-    (quote, button) =>
-      jumpToPdfQuote(mount, state, quote, sourceSelection?.attachmentID ?? null, button),
+    {
+      sourceItemID: state.itemID,
+      preferredAttachmentID: sourceSelection?.attachmentID ?? null,
+      onJump: (quote, button) =>
+        jumpToPdfQuote(
+          mount,
+          state,
+          quote,
+          sourceSelection?.attachmentID ?? null,
+          button,
+          state.itemID,
+        ),
+    },
   );
 }
 
@@ -6071,22 +6376,34 @@ function renderNoteFileSwitcher(
     void switchNoteFile(sidebar, "normal", normal);
   });
 
-  const route = noteFileSwitchButton(
-    doc,
-    routeExists ? "阅读路线" : "生成路线",
-    routeExists && active === "readingRoute",
-  );
-  route.title = routeExists
-    ? "打开专用阅读路线笔记"
-    : "还没有阅读路线；点击后生成并打开专用阅读路线笔记";
+  // Route button morphs by view state — no extra button, label/handler shift:
+  //   no route yet            → "生成路线" → generate
+  //   route exists, on AI 笔记 → "阅读路线" → switch
+  //   route exists, on route   → "更新路线" → regenerate (overwrites AI section,
+  //                              preserves 「我的补充笔记」via
+  //                              saveReadingRouteToDedicatedNote)
+  const isViewingRoute = routeExists && active === "readingRoute";
+  const routeLabel = isViewingRoute
+    ? "更新路线"
+    : routeExists
+      ? "阅读路线"
+      : "生成路线";
+  const route = noteFileSwitchButton(doc, routeLabel, false);
+  route.title = isViewingRoute
+    ? "重新生成阅读路线（覆盖 AI 生成区，保留「我的补充笔记」）"
+    : routeExists
+      ? "打开专用阅读路线笔记"
+      : "还没有阅读路线；点击后生成并打开专用阅读路线笔记";
   route.addEventListener("click", () => {
-    if (routeExists) {
+    if (isViewingRoute) {
+      void generateReadingRouteFromNoteSwitcher(sidebar, route);
+    } else if (routeExists) {
       void switchNoteFile(sidebar, "readingRoute", route);
     } else {
       void generateReadingRouteFromNoteSwitcher(sidebar, route);
     }
   });
-  if (!routeExists && panelState?.sending) route.disabled = true;
+  if (panelState?.sending) route.disabled = true;
 
   wrap.append(normal, route);
   return wrap;
@@ -6483,6 +6800,7 @@ function installZoteroNotePdfJumpLinks(
     locationOnly: boolean,
     event: Event | null,
     source: string,
+    referenceKind?: ReadingRouteReferenceKind,
   ) => {
     if (!locator) return;
     const state = states.get(sidebar.mount);
@@ -6506,10 +6824,13 @@ function installZoteroNotePdfJumpLinks(
       text: textDebugInfo(locator.selectedText, 80),
     });
     if (locationOnly) {
-      // First step for reading-route links: use Zotero's native selection
-      // restore path so the left PDF shows the blue selected text state.
       setTempLoadMarkStatus(sidebar.mount, "路线点击");
-      void jumpToPdfSelectionPreview(sidebar.mount, state, locator);
+      void jumpToPdfLocationOnly(
+        sidebar.mount,
+        state,
+        locator,
+        referenceKind,
+      );
     } else {
       void jumpToPdfSelection(sidebar.mount, state, locator);
     }
@@ -6520,30 +6841,80 @@ function installZoteroNotePdfJumpLinks(
     if ("button" in pointer && pointer.button !== 0) return;
     const link = notePdfJumpLinkFromEvent(event, iframeDocument);
     if (!link) return;
-    const quote = link ? pdfQuoteFromNoteLink(link) : "";
-    if (link.dataset.zaiPdfLocationOnly !== "true" && !quote) return;
-    if (quote) {
+    if (isPdfLocationJumpLink(link)) {
+      runJump(
+        pdfLocationFromNoteLink(link),
+        true,
+        event,
+        event.type,
+        readingRouteReferenceKindFromData(link.dataset.zaiPdfReferenceKind),
+      );
+      return;
+    }
+    if (pdfReferenceLabelFromNoteLink(link)) {
       consume(event);
       return;
     }
-    runJump(pdfLocationFromNoteLink(link), true, event, event.type);
+    if (isPdfQuoteJumpLink(link) || pdfQuoteFromNoteLink(link)) {
+      consume(event);
+    }
   };
   const onClick = (event: Event) => {
     const link = notePdfJumpLinkFromEvent(event, iframeDocument);
     if (!link) return;
-    const quote = pdfQuoteFromNoteLink(link);
-    if (quote) {
+    const locationLocator = isPdfLocationJumpLink(link)
+      ? pdfLocationFromNoteLink(link)
+      : null;
+    if (locationLocator) {
+      runJump(
+        locationLocator,
+        true,
+        event,
+        "click",
+        readingRouteReferenceKindFromData(link.dataset.zaiPdfReferenceKind),
+      );
+      return;
+    }
+    const selectionLocator = pdfSelectionFromNoteLink(link);
+    if (selectionLocator) {
+      if (isPdfQuoteJumpLink(link)) {
+        const state = states.get(sidebar.mount);
+        if (!state) return;
+        consume(event);
+        void jumpToPdfSelectionPreview(sidebar.mount, state, selectionLocator);
+        return;
+      }
+      runJump(selectionLocator, false, event, "click");
+      return;
+    }
+    const referenceLabel = pdfReferenceLabelFromNoteLink(link);
+    if (referenceLabel) {
       const state = states.get(sidebar.mount);
       if (!state) return;
       consume(event);
-      void jumpToPdfQuote(sidebar.mount, state, quote, null, link);
+      void jumpToReadingRouteReference(
+        sidebar.mount,
+        state,
+        referenceLabel,
+        sourceItemIDFromNoteLink(link) ?? state.itemID,
+        readingRouteReferenceKindFromData(link.dataset.zaiPdfReferenceKind),
+      );
       return;
     }
-    const locationOnly = link.dataset.zaiPdfLocationOnly === "true";
-    const locator = locationOnly
-      ? pdfLocationFromNoteLink(link)
-      : pdfSelectionFromNoteLink(link);
-    runJump(locator, locationOnly, event, "click");
+    const quoteData = pdfQuoteDataFromNoteLink(link);
+    if (quoteData?.quote) {
+      const state = states.get(sidebar.mount);
+      if (!state) return;
+      consume(event);
+      void jumpToPdfQuote(
+        sidebar.mount,
+        state,
+        quoteData.quote,
+        quoteData.preferredAttachmentID ?? null,
+        link,
+        quoteData.sourceItemID ?? state.itemID,
+      );
+    }
   };
   const onOpenURLMessage = (event: Event) => {
     const data = (event as MessageEvent).data as
@@ -6568,7 +6939,28 @@ function installZoteroNotePdfJumpLinks(
       const state = states.get(sidebar.mount);
       if (!state) return;
       consume(event);
-      void jumpToPdfQuote(sidebar.mount, state, quote, null);
+      const quoteData = pdfQuoteDataFromNoteHref(message.url);
+      void jumpToPdfQuote(
+        sidebar.mount,
+        state,
+        quoteData?.quote ?? quote,
+        quoteData?.preferredAttachmentID ?? null,
+        undefined,
+        quoteData?.sourceItemID ?? state.itemID,
+      );
+      return;
+    }
+    const referenceLabel = pdfReferenceLabelFromNoteHref(message.url);
+    if (referenceLabel) {
+      const state = states.get(sidebar.mount);
+      if (!state) return;
+      consume(event);
+      void jumpToReadingRouteReference(
+        sidebar.mount,
+        state,
+        referenceLabel,
+        state.itemID,
+      );
     }
   };
 
@@ -6690,7 +7082,7 @@ function notePdfJumpLinkAtPoint(
 ): HTMLAnchorElement | null {
   const links = Array.from(
     doc.querySelectorAll(
-      "a[data-zai-pdf-location], a[data-zai-pdf-selection], a[data-zai-pdf-quote]",
+      "a[data-zai-pdf-location], a[data-zai-pdf-selection], a[data-zai-pdf-quote], a[data-zai-pdf-reference-label]",
     ),
   ) as HTMLAnchorElement[];
   for (const link of links) {
@@ -6716,10 +7108,53 @@ function isNotePdfJumpLink(
       (link.hasAttribute("data-zai-pdf-location") ||
         link.hasAttribute("data-zai-pdf-selection") ||
         link.hasAttribute("data-zai-pdf-quote") ||
+        link.hasAttribute("data-zai-pdf-reference-label") ||
         pdfLocationJSONFromNoteHref(link.href) ||
         pdfSelectionJSONFromNoteHref(link.href) ||
-        pdfQuoteFromNoteHref(link.href)),
+        pdfQuoteFromNoteHref(link.href) ||
+        pdfReferenceLabelFromNoteHref(link.href)),
   );
+}
+
+function isPdfQuoteJumpLink(link: HTMLAnchorElement): boolean {
+  return (
+    link.classList.contains("zai-pdf-quote-jump") ||
+    link.dataset.zaiPdfQuoteLink === "true"
+  );
+}
+
+function isPdfLocationJumpLink(link: HTMLAnchorElement): boolean {
+  return Boolean(
+    link.dataset.zaiPdfLocationOnly === "true" ||
+      link.hasAttribute("data-zai-pdf-location") ||
+      pdfLocationJSONFromNoteHref(link.href),
+  );
+}
+
+function pdfReferenceLabelFromNoteLink(link: HTMLAnchorElement): string {
+  return (
+    link.getAttribute("data-zai-pdf-reference-label") ||
+    pdfReferenceLabelFromNoteHref(link.href)
+  ).trim();
+}
+
+function pdfReferenceLabelFromNoteHref(href: string): string {
+  const index = href.indexOf(NOTE_PDF_REFERENCE_HASH_MARKER);
+  if (index < 0) return "";
+  try {
+    return decodeURIComponent(
+      href.slice(index + NOTE_PDF_REFERENCE_HASH_MARKER.length),
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function sourceItemIDFromNoteLink(link: HTMLAnchorElement): number | null {
+  const raw = link.getAttribute("data-zai-pdf-source-item-id");
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 function closestNoteElement(
@@ -6814,6 +7249,31 @@ function ensureKatexCSSInDocument(doc: Document): void {
 }
 .zai-pdf-quote-jump {
   display: inline-block;
+}
+.zai-reading-route-key {
+  margin: 0 2px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="blue"] {
+  background: rgba(46, 168, 229, 0.28) !important;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="yellow"] {
+  background: rgba(255, 212, 0, 0.36) !important;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="red"] {
+  background: rgba(255, 102, 102, 0.28) !important;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="green"] {
+  background: rgba(95, 178, 54, 0.28) !important;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="purple"] {
+  background: rgba(162, 138, 229, 0.28) !important;
+}
+.zai-reading-route-key[data-zai-reading-route-tone="orange"] {
+  background: rgba(241, 152, 55, 0.32) !important;
 }
 `;
     root.append(style);
@@ -7190,16 +7650,28 @@ async function saveReadingRouteToDedicatedNote(
   const target = await resolveReadingRouteNote(itemID);
   const existing = target.note.getNote?.() || "";
   const jumpLinks = await readingRoutePdfJumpLinks(doc, itemID, markdown);
-  target.note.setNote(readingRouteNoteHTML(doc, markdown, existing, jumpLinks));
+  const quoteLinks = await readingRoutePdfQuoteJumpLinks(doc, itemID, markdown);
+  target.note.setNote(
+    readingRouteNoteHTML(
+      doc,
+      itemID,
+      markdown,
+      existing,
+      jumpLinks,
+      quoteLinks,
+    ),
+  );
   await target.note.saveTx();
   return target;
 }
 
 function readingRouteNoteHTML(
   doc: Document,
+  itemID: number | null,
   markdown: string,
   existing: string,
   jumpLinks: Map<string, PdfSelectionLocator> = new Map(),
+  quoteLinks: Map<string, PdfSelectionLocator> = new Map(),
 ): string {
   const root = doc.createElement("div");
   const title = doc.createElement("h1");
@@ -7217,7 +7689,9 @@ function readingRouteNoteHTML(
 
   const body = doc.createElement("div");
   renderMarkdownInto(body, markdown.trim(), "source");
-  linkReadingRoutePdfReferences(body, jumpLinks);
+  linkReadingRoutePdfReferences(body, jumpLinks, itemID);
+  installPdfQuoteButtonsInElement(body, { sourceItemID: itemID, quoteLinks });
+  highlightReadingRouteKeyBullets(body);
   while (body.firstChild) root.appendChild(body.firstChild);
 
   root.append(doc.createElement("hr"));
@@ -7279,82 +7753,48 @@ async function readingRoutePdfJumpLinks(
   return links;
 }
 
-function readingRouteReferenceLabels(markdown: string): string[] {
-  const labels = new Map<string, string>();
-  const pattern =
-    /\b(?:Fig(?:ure)?\.?|Table)\s*\d+[A-Za-z]?\b|\b(?:Eq(?:uation)?\.?|Equation)\s*\(?\d+[A-Za-z]?\)?(?:\s*[-–—]\s*\(?\d+[A-Za-z]?\)?)?/gi;
-  for (const match of markdown.matchAll(pattern)) {
-    const label = canonicalReadingRouteReference(match[0]);
-    if (label) labels.set(readingRouteReferenceKey(label), label);
-  }
-  return Array.from(labels.values());
-}
+async function readingRoutePdfQuoteJumpLinks(
+  doc: Document,
+  itemID: number | null,
+  markdown: string,
+): Promise<Map<string, PdfSelectionLocator>> {
+  const links = new Map<string, PdfSelectionLocator>();
+  if (itemID == null) return links;
 
-async function locateReadingRouteReference(
-  locator: Awaited<ReturnType<typeof createPdfLocator>>,
-  label: string,
-) {
-  for (const candidate of readingRouteLocateCandidates(label)) {
-    const result = await locator.locate(candidate, { minConfidence: 0.92 });
-    if (result) return result;
-  }
-  return null;
-}
+  const body = doc.createElement("div");
+  renderMarkdownInto(body, markdown.trim(), "source");
+  const quotes = uniqueStrings(
+    pdfQuoteBlocks(body, PDF_QUOTE_MIN_CHARS)
+      .slice(0, PDF_QUOTE_MAX_PER_RENDER)
+      .map((block) =>
+        firstPdfQuoteLocateCandidate(
+          pdfQuoteBlockLocateText(block),
+          PDF_QUOTE_MIN_CHARS,
+        ),
+      )
+      .filter(Boolean),
+  );
+  if (!quotes.length) return links;
 
-function readingRouteLocateCandidates(label: string): string[] {
-  const parsed = readingRouteReferenceParts(label);
-  if (!parsed) return [label];
-  const number = parsed.locateNumber ?? parsed.number;
-  const bases =
-    parsed.kind === "figure"
-      ? [`Figure ${number}`, `Fig. ${number}`, `Fig ${number}`]
-      : parsed.kind === "table"
-        ? [`Table ${number}`]
-        : [
-            `Equation ${number}`,
-            `Equation (${number})`,
-            `Eq. ${number}`,
-            `Eq. (${number})`,
-            `Eq ${number}`,
-            `Eq (${number})`,
-            `(${number})`,
-          ];
-  return [...new Set(bases.flatMap((base) => [`${base}:`, `${base}.`, base]))];
-}
+  const reader = getReaderForAttachmentOrItem(doc.defaultView, itemID, null);
+  if (!reader) return links;
 
-function linkReadingRoutePdfReferences(
-  root: HTMLElement,
-  jumpLinks: Map<string, PdfSelectionLocator>,
-) {
-  if (!jumpLinks.size) return;
-  const doc = root.ownerDocument!;
-  const textNodes = noteTextNodes(root);
-  const pattern =
-    /\b(?:Fig(?:ure)?\.?|Table)\s*\d+[A-Za-z]?\b|\b(?:Eq(?:uation)?\.?|Equation)\s*\(?\d+[A-Za-z]?\)?(?:\s*[-–—]\s*\(?\d+[A-Za-z]?\)?)?/gi;
-  for (const node of textNodes) {
-    const text = node.textContent || "";
-    pattern.lastIndex = 0;
-    let lastIndex = 0;
-    let changed = false;
-    const fragment = doc.createDocumentFragment();
-    for (const match of text.matchAll(pattern)) {
-      const start = match.index ?? 0;
-      const raw = match[0];
-      const locator = jumpLinks.get(readingRouteReferenceKey(raw));
-      if (!locator) continue;
-      if (start > lastIndex) {
-        fragment.append(doc.createTextNode(text.slice(lastIndex, start)));
-      }
-      fragment.append(readingRoutePdfReferenceLink(doc, raw, locator));
-      lastIndex = start + raw.length;
-      changed = true;
+  let locator: Awaited<ReturnType<typeof createPdfLocator>> | null = null;
+  try {
+    locator = await createPdfLocator(reader);
+    for (const quote of quotes) {
+      const result = await locatePdfQuoteBlock(locator, quote);
+      if (!result) continue;
+      links.set(pdfQuoteLinkKey(quote), result);
     }
-    if (!changed) continue;
-    if (lastIndex < text.length) {
-      fragment.append(doc.createTextNode(text.slice(lastIndex)));
-    }
-    node.parentNode?.replaceChild(fragment, node);
+  } catch (err) {
+    debugZai("reading-route.pdf-quote-links.failed", {
+      error: errorMessage(err),
+    });
+  } finally {
+    locator?.dispose();
   }
+  return links;
 }
 
 function noteTextNodes(root: Node): Text[] {
@@ -7373,6 +7813,65 @@ function noteTextNodes(root: Node): Text[] {
   };
   collect(root);
   return nodes;
+}
+
+function linkReadingRoutePdfReferences(
+  root: HTMLElement,
+  jumpLinks: Map<string, PdfSelectionLocator>,
+  itemID: number | null = null,
+) {
+  const doc = root.ownerDocument!;
+  const textNodes = noteTextNodes(root);
+  const pattern =
+    /\b(?:Fig(?:ure)?\.?|Table)\s*\d+[A-Za-z]?\b|\b(?:Eq(?:uation)?\.?|Equation)\s*\(?\d+[A-Za-z]?\)?(?:\s*[-–—]\s*\(?\d+[A-Za-z]?\)?)?/gi;
+  for (const node of textNodes) {
+    const text = node.textContent || "";
+    pattern.lastIndex = 0;
+    let lastIndex = 0;
+    let changed = false;
+    const fragment = doc.createDocumentFragment();
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      const raw = match[0];
+      const locator = jumpLinks.get(readingRouteReferenceKey(raw));
+      if (start > lastIndex) {
+        fragment.append(doc.createTextNode(text.slice(lastIndex, start)));
+      }
+      fragment.append(
+        locator
+          ? readingRoutePdfReferenceLink(doc, raw, locator)
+          : readingRoutePdfReferenceFallbackLink(doc, raw, itemID),
+      );
+      lastIndex = start + raw.length;
+      changed = true;
+    }
+    if (!changed) continue;
+    if (lastIndex < text.length) {
+      fragment.append(doc.createTextNode(text.slice(lastIndex)));
+    }
+    node.parentNode?.replaceChild(fragment, node);
+  }
+}
+
+const NOTE_PDF_REFERENCE_HASH_MARKER = "#zaiReference=";
+
+function readingRoutePdfReferenceFallbackLink(
+  doc: Document,
+  label: string,
+  itemID: number | null,
+): HTMLAnchorElement {
+  const link = doc.createElement("a");
+  const kind = readingRouteReferenceParts(label)?.kind;
+  link.className = "zai-note-pdf-selection-link";
+  link.href = `${NOTE_PDF_REFERENCE_HASH_MARKER}${encodeURIComponent(label)}`;
+  link.textContent = label;
+  link.title = "点击后临时定位 PDF 图表/公式位置";
+  link.setAttribute("data-zai-pdf-reference-label", label);
+  if (kind) link.setAttribute("data-zai-pdf-reference-kind", kind);
+  if (itemID != null) {
+    link.setAttribute("data-zai-pdf-source-item-id", String(itemID));
+  }
+  return link;
 }
 
 function readingRoutePdfReferenceLink(
@@ -7394,59 +7893,6 @@ function readingRoutePdfReferenceLink(
   const kind = readingRouteReferenceParts(label)?.kind;
   if (kind) link.setAttribute("data-zai-pdf-reference-kind", kind);
   return link;
-}
-
-type ReadingRouteReferenceKind = "figure" | "table" | "equation";
-
-function readingRouteReferenceKindFromData(
-  value: string | undefined,
-): ReadingRouteReferenceKind | undefined {
-  return value === "figure" || value === "table" || value === "equation"
-    ? value
-    : undefined;
-}
-
-function readingRouteReferenceKey(value: string): string {
-  const canonical = canonicalReadingRouteReference(value);
-  return canonical.toLowerCase().replace(/\s+/g, " ");
-}
-
-function canonicalReadingRouteReference(value: string): string {
-  const parsed = readingRouteReferenceParts(value);
-  if (!parsed) return value.trim();
-  const label =
-    parsed.kind === "figure"
-      ? "Figure"
-      : parsed.kind === "table"
-        ? "Table"
-        : "Eq.";
-  return `${label} ${parsed.number}`;
-}
-
-function readingRouteReferenceParts(
-  value: string,
-): {
-  kind: ReadingRouteReferenceKind;
-  number: string;
-  locateNumber?: string;
-} | null {
-  const match = value
-    .trim()
-    .match(
-      /^(Fig(?:ure)?\.?|Table|Eq(?:uation)?\.?|Equation)\s*\(?(\d+[A-Za-z]?)\)?(?:\s*[-–—]\s*\(?(\d+[A-Za-z]?)\)?)?$/i,
-    );
-  if (!match) return null;
-  const kind = /^fig/i.test(match[1]!)
-    ? "figure"
-    : /^table/i.test(match[1]!)
-      ? "table"
-      : "equation";
-  const number = match[3] ? `${match[2]}-${match[3]}` : match[2]!;
-  return {
-    kind,
-    number,
-    locateNumber: match[2]!,
-  };
 }
 
 function extractReadingRouteManualHTML(
@@ -7537,37 +7983,42 @@ async function createStandaloneNote(pdf: Zotero.Item): Promise<Zotero.Item> {
   return note;
 }
 
-function installPdfQuoteButtonsInElement(
-  root: HTMLElement,
+interface PdfQuoteButtonOptions {
   onJump?: (
     quote: string,
     button: HTMLAnchorElement,
-  ) => void | Promise<void>,
+  ) => void | Promise<void>;
+  sourceItemID?: number | null;
+  preferredAttachmentID?: number | null;
+  quoteLinks?: Map<string, PdfSelectionLocator>;
+}
+
+function installPdfQuoteButtonsInElement(
+  root: HTMLElement,
+  options: PdfQuoteButtonOptions = {},
 ): void {
-  const blocks = pdfQuoteBlocks(root).slice(0, PDF_QUOTE_MAX_PER_RENDER);
+  const blocks = pdfQuoteBlocks(root, PDF_QUOTE_MIN_CHARS).slice(
+    0,
+    PDF_QUOTE_MAX_PER_RENDER,
+  );
   if (!blocks.length) return;
   for (const block of blocks) {
     if (block.querySelector(".zai-pdf-quote-jump")) continue;
     const quote = firstPdfQuoteLocateCandidate(
-      block.textContent ?? "",
+      pdfQuoteBlockLocateText(block),
       PDF_QUOTE_MIN_CHARS,
     );
     if (!quote) continue;
-    wrapPdfQuoteBlock(block, quote, onJump);
+    wrapPdfQuoteBlock(block, quote, {
+      ...options,
+      prelocatedSelection: options.quoteLinks?.get(pdfQuoteLinkKey(quote)),
+    });
   }
 }
 
-function pdfQuoteBlocks(root: HTMLElement): HTMLElement[] {
-  return (Array.from(root.querySelectorAll("blockquote")) as HTMLElement[])
-    .filter((block) => {
-      if (block.closest("a")) return false;
-      const quote = firstPdfQuoteLocateCandidate(
-        block.textContent ?? "",
-        PDF_QUOTE_MIN_CHARS,
-      );
-      return !!quote && quote.length >= PDF_QUOTE_MIN_CHARS;
-    });
-}
+type PdfQuoteBlockOptions = PdfQuoteButtonOptions & {
+  prelocatedSelection?: PdfSelectionLocator;
+};
 
 async function locatePdfQuoteBlock(
   locator: Awaited<ReturnType<typeof createPdfLocator>>,
@@ -7591,12 +8042,14 @@ async function jumpToPdfQuote(
   quote: string,
   preferredAttachmentID: number | null = null,
   _button?: HTMLElement,
+  sourceItemID: number | null = null,
 ): Promise<void> {
   setTempLoadMarkStatus(mount, "原文定位中");
   try {
+    const itemID = sourceItemID ?? state.itemID;
     const locator = await locatePdfQuoteForItem(
       mount.ownerDocument!,
-      state.itemID,
+      itemID,
       quote,
       preferredAttachmentID,
     );
@@ -7691,22 +8144,29 @@ function pdfSelectionLocatorFromLocateResult(
 function wrapPdfQuoteBlock(
   block: HTMLElement,
   quote: string,
-  onJump?: (
-    quote: string,
-    button: HTMLAnchorElement,
-  ) => void | Promise<void>,
+  options: PdfQuoteBlockOptions = {},
 ): void {
   const doc = block.ownerDocument!;
   const link = doc.createElement("a");
   link.className = "zai-pdf-quote-jump zai-note-pdf-selection-link";
   link.textContent = "查看原文";
   link.title = "点击回到 PDF 原文，并选中这段论据";
-  applyPdfQuoteLinkAttributes(link, quote);
-  if (onJump) {
+  link.dataset.zaiPdfQuoteLink = "true";
+  if (options.prelocatedSelection) {
+    applyPdfSelectionLinkAttributes(link, options.prelocatedSelection);
+  } else {
+    applyPdfQuoteLinkAttributes(
+      link,
+      quote,
+      options.sourceItemID ?? null,
+      options.preferredAttachmentID ?? null,
+    );
+  }
+  if (options.onJump) {
     link.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      void onJump(quote, link);
+      void options.onJump?.(quote, link);
     });
   }
   const actions = doc.createElement("div");
@@ -7739,7 +8199,7 @@ async function assistantContentToNoteHTML(
   // re-renders via its own KaTeX pass. See the comment in
   // appendInlineMarkdown above for the failure modes we'd hit otherwise.
   renderMarkdownInto(body, content.trim(), "source");
-  installPdfQuoteButtonsInElement(body);
+  installPdfQuoteButtonsInElement(body, { sourceItemID: itemID });
   while (body.firstChild) root.appendChild(body.firstChild);
   return String(root.innerHTML);
 }
@@ -7775,11 +8235,35 @@ function applyPdfSelectionLinkAttributes(
   link.setAttribute("data-zai-pdf-selection", data);
 }
 
-function applyPdfQuoteLinkAttributes(link: HTMLAnchorElement, quote: string): void {
+function applyPdfQuoteLinkAttributes(
+  link: HTMLAnchorElement,
+  quote: string,
+  sourceItemID: number | null = null,
+  preferredAttachmentID: number | null = null,
+): void {
+  const payload =
+    sourceItemID == null && preferredAttachmentID == null
+      ? quote
+      : JSON.stringify({
+          quote,
+          ...(sourceItemID != null ? { sourceItemID } : {}),
+          ...(preferredAttachmentID != null
+            ? { preferredAttachmentID }
+            : {}),
+        });
   link.href = `#${NOTE_PDF_QUOTE_HASH_MARKER.slice(1)}${encodeURIComponent(
-    quote,
+    payload,
   )}`;
   link.setAttribute("data-zai-pdf-quote", quote);
+  if (sourceItemID != null) {
+    link.setAttribute("data-zai-pdf-source-item-id", String(sourceItemID));
+  }
+  if (preferredAttachmentID != null) {
+    link.setAttribute(
+      "data-zai-pdf-source-attachment-id",
+      String(preferredAttachmentID),
+    );
+  }
 }
 
 function pdfSelectionPageLabel(selection: PdfSelectionLocator): string {
@@ -8194,7 +8678,8 @@ function renderAssistantProcess(
 ) {
   if (!sourceUser?.context) return;
 
-  const summary = contextSummaryLine(sourceUser);
+  const hideDirectSelectionContext = sourceUser.context.explainSelection === true;
+  const summary = hideDirectSelectionContext ? "" : contextSummaryLine(sourceUser);
   const tools = sourceUser.context.toolCalls;
   if (!summary && !tools?.length) return;
 
@@ -8330,18 +8815,14 @@ export function registerSidebarForWindow(win: Window) {
   splitter.id = SPLITTER_ID;
   splitter.setAttribute("resizebefore", "closest");
   splitter.setAttribute("resizeafter", "closest");
-  splitter.setAttribute("collapse", "after");
   splitter.setAttribute("orient", "horizontal");
-  splitter.append(doc.createXULElement("grippy"));
 
   const noteSplitter = doc.createXULElement("splitter");
   noteSplitter.id = NOTE_SPLITTER_ID;
   noteSplitter.setAttribute("resizebefore", "closest");
   noteSplitter.setAttribute("resizeafter", "closest");
-  noteSplitter.setAttribute("collapse", "after");
   noteSplitter.setAttribute("orient", "horizontal");
   noteSplitter.setAttribute("hidden", "true");
-  noteSplitter.append(doc.createXULElement("grippy"));
 
   const noteColumn = doc.createXULElement("vbox");
   noteColumn.id = NOTE_COLUMN_ID;

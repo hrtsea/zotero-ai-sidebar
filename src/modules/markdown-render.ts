@@ -3,6 +3,19 @@ import {
   renderMathInto,
   type MathRenderMode,
 } from "../ui/math";
+import { parseMermaidMindmap, renderMindmapBlock } from "./mindmap-render";
+
+interface ListState {
+  tag: "ol" | "ul";
+  element: HTMLElement;
+  lastItem: HTMLLIElement | null;
+}
+
+interface MarkdownListItem {
+  text: string;
+  ordered: boolean;
+  level: number;
+}
 
 // Hand-rolled Markdown block parser.
 // =====================================================================
@@ -20,9 +33,9 @@ import {
 //      external runtime cost for chat rendering.
 //
 // Supported subset (block):
-//   #/##/###/#### headings, ordered+unordered lists (no nesting),
+//   #/##/###/#### headings, ordered+unordered lists (one nested level),
 //   ```fence``` code blocks, > blockquote, paragraphs.
-// NOT supported: tables, HR, image syntax, nested lists, setext headings.
+// NOT supported: tables, HR, image syntax, deep nested lists, setext headings.
 // REF: Claudian's MessageRenderer (similar minimal subset for the same
 //      streaming reasons); CommonMark spec we deliberately don't follow.
 export function renderMarkdownInto(
@@ -35,7 +48,7 @@ export function renderMarkdownInto(
   const normalized = markdown.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   const lines = normalized.split("\n");
   let paragraph: string[] = [];
-  let list: HTMLElement | null = null;
+  let listStack: ListState[] = [];
   let blockquote: HTMLElement | null = null;
   let codeLines: string[] | null = null;
   let codeLanguage = "";
@@ -56,24 +69,43 @@ export function renderMarkdownInto(
   };
 
   const flushList = () => {
-    list = null;
+    listStack = [];
   };
 
   const flushBlockquote = () => {
     blockquote = null;
   };
 
-  const appendListItem = (text: string, ordered: boolean) => {
+  const appendListItem = (item: MarkdownListItem) => {
     flushParagraph();
     flushBlockquote();
-    const tag = ordered ? "ol" : "ul";
-    if (!list || list.tagName.toLowerCase() !== tag) {
-      list = doc.createElement(tag);
-      target.append(list);
+    const tag = item.ordered ? "ol" : "ul";
+    let level = Math.min(item.level, 1);
+    if (level > 0 && !listStack[level - 1]?.lastItem) level = 0;
+
+    if (level === 0) {
+      if (!listStack[0] || listStack[0].tag !== tag) {
+        const element = doc.createElement(tag);
+        target.append(element);
+        listStack = [{ tag, element, lastItem: null }];
+      } else {
+        listStack = [listStack[0]];
+      }
+    } else {
+      const parent = listStack[level - 1].lastItem!;
+      if (!listStack[level] || listStack[level].tag !== tag) {
+        const element = doc.createElement(tag);
+        parent.append(element);
+        listStack[level] = { tag, element, lastItem: null };
+      }
+      listStack = listStack.slice(0, level + 1);
     }
+
+    const list = listStack[level].element;
     const li = doc.createElement("li");
-    appendInlineMarkdown(li, text, mathMode);
+    appendInlineMarkdown(li, item.text, mathMode);
     list.append(li);
+    listStack[level].lastItem = li;
   };
 
   const appendBlockquoteLine = (text: string) => {
@@ -91,12 +123,25 @@ export function renderMarkdownInto(
   // INVARIANT: code body uses `textContent`, NOT innerHTML — prompt
   // injection inside fenced code stays as displayed text. Class name uses
   // `language-${lang}` for any future syntax-highlighting CSS hook.
+  // Special case: `mermaid` blocks with a `mindmap` diagram are rendered as
+  // inline SVG using our dagre+SVG renderer (Mermaid library is CSP-blocked).
   const flushCode = () => {
     if (codeLines == null) return;
+    const raw = codeLines.join("\n");
+    if (codeLanguage === "mermaid") {
+      const parsed = parseMermaidMindmap(raw);
+      if (parsed) {
+        parsed.source = raw;
+        target.append(renderMindmapBlock(doc, parsed));
+        codeLines = null;
+        codeLanguage = "";
+        return;
+      }
+    }
     const pre = doc.createElement("pre");
     const code = doc.createElement("code");
     if (codeLanguage) code.className = `language-${codeLanguage}`;
-    code.textContent = codeLines.join("\n");
+    code.textContent = raw;
     pre.append(code);
     target.append(pre);
     codeLines = null;
@@ -150,15 +195,9 @@ export function renderMarkdownInto(
       continue;
     }
 
-    const unordered = unorderedListText(line);
-    if (unordered != null) {
-      appendListItem(unordered, false);
-      continue;
-    }
-
-    const ordered = orderedListText(line);
-    if (ordered != null) {
-      appendListItem(ordered, true);
+    const listItem = markdownListItem(line);
+    if (listItem) {
+      appendListItem(listItem);
       continue;
     }
 
@@ -349,26 +388,36 @@ function markdownHeadingLevel(line: string): number {
   return level > 0 && level <= 4 && line[level] === " " ? level : 0;
 }
 
-function unorderedListText(line: string): string | null {
-  const trimmed = trimListIndent(line);
+function markdownListItem(line: string): MarkdownListItem | null {
+  const indent = listIndentLevel(line);
+  const trimmed = line.slice(countListIndentChars(line));
   if (trimmed.startsWith("- ") || trimmed.startsWith("* "))
-    return trimmed.slice(2).trim();
-  return null;
-}
-
-function orderedListText(line: string): string | null {
-  const trimmed = trimListIndent(line);
+    return { text: trimmed.slice(2).trim(), ordered: false, level: indent };
   let index = 0;
   while (index < trimmed.length && isDigit(trimmed[index])) index++;
   if (index === 0 || trimmed[index] !== "." || trimmed[index + 1] !== " ")
     return null;
-  return trimmed.slice(index + 2).trim();
+  return { text: trimmed.slice(index + 2).trim(), ordered: true, level: indent };
 }
 
 function trimListIndent(line: string): string {
+  return line.slice(countListIndentChars(line));
+}
+
+function countListIndentChars(line: string): number {
   let index = 0;
   while (line[index] === " " || line[index] === "\t") index++;
-  return line.slice(index);
+  return index;
+}
+
+function listIndentLevel(line: string): number {
+  let width = 0;
+  for (let index = 0; index < line.length; index++) {
+    if (line[index] === " ") width += 1;
+    else if (line[index] === "\t") width += 2;
+    else break;
+  }
+  return width >= 2 ? 1 : 0;
 }
 
 function isDigit(char: string): boolean {

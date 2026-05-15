@@ -508,6 +508,7 @@ describe("createZoteroAgentTools", () => {
       "zotero_search_pdf",
       "zotero_read_pdf_range",
       "zotero_get_full_pdf",
+      "draw_article_mindmap",
       "paper_search_arxiv",
       "paper_fetch_arxiv_fulltext",
       "zotero_get_reader_pdf_text",
@@ -760,6 +761,86 @@ describe("createZoteroAgentTools", () => {
       const result = await tool!.execute({ content: "x" });
       expect(result.output).toContain("Failed to write");
       expect(result.output).toContain("note locked");
+    });
+  });
+
+  describe("draw_article_mindmap", () => {
+    it("calls onMindmapReady with validated node/edge data", async () => {
+      let received: unknown = null;
+      const tools = createZoteroAgentTools({
+        source,
+        itemID: 1,
+        onMindmapReady: (data) => {
+          received = data;
+        },
+      });
+      const tool = tools.find((t) => t.name === "draw_article_mindmap");
+      expect(tool).toBeDefined();
+      expect(tool?.requiresApproval).toBeUndefined();
+
+      const result = await tool!.execute({
+        title: "Test Paper",
+        nodes: [
+          { id: "root", label: "Main Thesis", type: "root" },
+          { id: "s1", label: "Section One", type: "section" },
+          { id: "p1", label: "Detail Point", type: "point" },
+        ],
+        edges: [
+          { source: "root", target: "s1" },
+          { source: "s1", target: "p1" },
+        ],
+      });
+
+      expect(result.output).toContain("3 nodes");
+      expect(result.output).toContain("2 edges");
+      expect(result.summary).toContain("生成结构图");
+      expect(received).toMatchObject({
+        title: "Test Paper",
+        nodes: [
+          { id: "root", label: "Main Thesis", type: "root" },
+          { id: "s1", label: "Section One", type: "section" },
+          { id: "p1", label: "Detail Point", type: "point" },
+        ],
+        edges: [
+          { source: "root", target: "s1" },
+          { source: "s1", target: "p1" },
+        ],
+      });
+    });
+
+    it("returns an error when nodes array is missing", async () => {
+      const tools = createZoteroAgentTools({ source, itemID: 1 });
+      const tool = tools.find((t) => t.name === "draw_article_mindmap");
+      const result = await tool!.execute({ edges: [] });
+      expect(result.output).toContain("requires 'nodes' and 'edges' arrays");
+    });
+
+    it("skips edges referencing unknown node ids", async () => {
+      let received: unknown = null;
+      const tools = createZoteroAgentTools({
+        source,
+        itemID: 1,
+        onMindmapReady: (d) => {
+          received = d;
+        },
+      });
+      const tool = tools.find((t) => t.name === "draw_article_mindmap");
+      await tool!.execute({
+        nodes: [{ id: "root", label: "Root" }],
+        edges: [{ source: "root", target: "missing" }],
+      });
+      // The tool stores the raw edges list; rendering skips invalid ones
+      expect((received as { edges: unknown[] }).edges).toHaveLength(1);
+    });
+
+    it("works without onMindmapReady callback", async () => {
+      const tools = createZoteroAgentTools({ source, itemID: 1 });
+      const tool = tools.find((t) => t.name === "draw_article_mindmap");
+      const result = await tool!.execute({
+        nodes: [{ id: "n1", label: "Only Node" }],
+        edges: [],
+      });
+      expect(result.output).toContain("1 nodes");
     });
   });
 });

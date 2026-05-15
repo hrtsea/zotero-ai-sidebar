@@ -60,6 +60,13 @@ export class AnthropicProvider implements Provider {
       return;
     }
 
+    let latestUsage:
+      | {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+        }
+      | undefined;
     try {
       for await (const event of stream) {
         const e = event as {
@@ -74,13 +81,18 @@ export class AnthropicProvider implements Provider {
             yield { type: 'thinking_delta', text: e.delta.thinking };
           }
         } else if (e.type === 'message_delta' && e.usage) {
-          yield {
-            type: 'usage',
-            input: e.usage.input_tokens ?? 0,
-            output: e.usage.output_tokens ?? 0,
-            cacheRead: e.usage.cache_read_input_tokens,
-          };
+          latestUsage = e.usage;
         }
+      }
+      if (latestUsage) {
+        yield {
+          type: 'usage',
+          input: latestUsage.input_tokens ?? 0,
+          output: latestUsage.output_tokens ?? 0,
+          ...(typeof latestUsage.cache_read_input_tokens === 'number'
+            ? { cacheRead: latestUsage.cache_read_input_tokens }
+            : {}),
+        };
       }
     } catch (err) {
       yield { type: 'error', message: errMsg(err) };

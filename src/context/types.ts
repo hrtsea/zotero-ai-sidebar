@@ -17,6 +17,7 @@ export type ContextMode =
   | "reader_pdf_text"
   | "annotation_write"
   | "note_write"
+  | "mindmap"
   | "previous_context";
 
 export type ContextPlanSource = "selected" | "model" | "fallback";
@@ -83,5 +84,9 @@ export interface MessageContext {
   fullTextTruncated?: boolean;
   retainedContextCount?: number;
   retainedContextChars?: number;
+  // Hidden prompt-only snapshot captured when the user turn is submitted.
+  // Replaying this with the same user turn keeps future prompts append-only
+  // instead of rewriting the system prompt with a fresh ledger each turn.
+  promptCacheLedger?: string;
   toolCalls?: ToolTrace[];
 }
