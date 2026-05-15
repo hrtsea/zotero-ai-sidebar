@@ -97,13 +97,22 @@ position, sends from either path are mutually cache-consistent.
   same directory as `zotero-ai-sidebar-chat-history.json` (reuse `historyDir()`
   from `chat-history.ts`).
 - Keyed by `item:<itemID>`. Each entry:
-  `{ pinned: boolean, fullText: string, charCount: number, capturedAt: string, source: 'full_pdf' }`.
+  `{ pinned: boolean, fullText: string, contentHash: string, charCount: number, capturedAt: string, source: 'full_pdf' }`.
+- `contentHash` is an integrity hash of `fullText` computed at capture time
+  (MD5 if Zotero exposes a hash helper; otherwise SHA-256 via the Gecko
+  runtime's Web Crypto — Web Crypto does not implement MD5). It exists so a
+  corrupt or hand-edited `fullText` is detected rather than silently sent.
 - First capture (by EITHER trigger): extract full text via the existing
   full-text path (same source as `zotero_get_full_pdf`), apply the
-  `policy.fullPdfTokenBudget` cap, then freeze the resulting string into the
-  file.
-- Every later read (either trigger): read the frozen string. Never re-extract
-  while a frozen copy exists — guarantees byte-identical content turn to turn.
+  `policy.fullPdfTokenBudget` cap, freeze the string into the file, and store
+  its `contentHash`.
+- Every later read (either trigger): first decide whether a usable cache
+  exists — the entry must be present AND its stored `contentHash` must match a
+  freshly computed hash of `fullText`. Only a verified match is used.
+- A missing entry or a hash mismatch means "no usable cache": the caller
+  re-extracts, re-freezes, and re-hashes (self-healing). Never re-extract while
+  a verified frozen copy exists — that is what guarantees byte-identical
+  content turn to turn.
 - `pinned` is set true/false ONLY by the toggle. Trigger B reads/writes
   `fullText` but never changes `pinned`.
 - Toggling OFF sets `pinned: false` but keeps the frozen `fullText`.
@@ -137,6 +146,11 @@ position, sends from either path are mutually cache-consistent.
   earlier fetch — cross-turn cache-eligible.
 - This path applies on the OpenAI provider only; the Anthropic adapter has no
   agent tool loop, so the model cannot call this tool there.
+- When the toggle is already ON, the front block is already present from
+  Trigger A. A `zotero_get_full_pdf` call is then idempotent: it does no
+  extraction, sets nothing new, and just returns the ack. The model rarely
+  needs to call it (the paper is already visible at the front), but doing so
+  is harmless.
 
 ### 6. Provider front-block slot
 
@@ -169,7 +183,10 @@ position, sends from either path are mutually cache-consistent.
 - Oversized paper: apply `policy.fullPdfTokenBudget` (60k tokens) at capture
   time; truncate and mark truncation — consistent with current behavior.
 - Corrupt cache file: normalize-on-read discards malformed entries.
-- Frozen text is captured once; "re-capture" is out of scope.
+- Content-hash mismatch: the frozen `fullText` is treated as unusable; the
+  caller re-extracts, re-freezes, and re-hashes (self-healing).
+- Frozen text is captured once and reused while its hash verifies;
+  unconditional "re-capture" is out of scope.
 
 ### 9. Testing
 
