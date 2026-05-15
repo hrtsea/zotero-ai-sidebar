@@ -193,6 +193,7 @@ export class OpenAIProvider implements Provider {
 
     // Accumulate the full conversation including tool turns across iterations.
     const chatMessages: ChatMessage[] = toChatMessages(messages, systemPrompt);
+    let frontBlock: string | undefined = options.pinnedFullText;
 
     for (let iteration = 0; iteration <= maxIterations; iteration++) {
       let stream: AsyncIterable<unknown>;
@@ -200,7 +201,10 @@ export class OpenAIProvider implements Provider {
         stream = (await client.chat.completions.create(
           {
             model: preset.model,
-            messages: chatMessages,
+            messages: withFrontBlock(
+              chatMessages as Array<{ role?: string }>,
+              frontBlock,
+            ) as ChatMessage[],
             max_tokens: preset.maxTokens,
             stream: true,
             stream_options: { include_usage: true },
@@ -290,6 +294,7 @@ export class OpenAIProvider implements Provider {
           arguments: tc.function.arguments,
         };
         const result = await executeToolCall(callLike, toolMap, signal, options.permissionMode ?? 'default');
+        if (result.result.frontBlock) frontBlock = result.result.frontBlock;
         yield { type: 'tool_call', name: tc.function.name, status: result.status, summary: result.result.summary, context: result.result.context };
         chatMessages.push({ role: 'tool', tool_call_id: tc.id, content: result.result.output } as ChatMessage);
       }
@@ -316,6 +321,7 @@ export class OpenAIProvider implements Provider {
     // function_call we replay, then each function_call_output we synthesize
     // from local tool execution. The model sees the same shape every turn.
     const input: unknown[] = toOpenAIInput(messages);
+    let frontBlock: string | undefined = options.pinnedFullText;
     const maxIterations =
       options.maxToolIterations ?? DEFAULT_CONTEXT_POLICY.maxToolIterations;
 
@@ -326,7 +332,7 @@ export class OpenAIProvider implements Provider {
           {
             model: preset.model,
             instructions: systemPrompt,
-            input,
+            input: withFrontBlock(input as Array<{ role?: string }>, frontBlock),
             ...maxOutputTokensParam(preset),
             ...promptCacheParams(preset, options),
             reasoning: reasoningOptions(preset),
@@ -454,6 +460,7 @@ export class OpenAIProvider implements Provider {
           signal,
           options.permissionMode ?? 'default',
         );
+        if (result.result.frontBlock) frontBlock = result.result.frontBlock;
         yield {
           type: 'tool_call',
           name: call.name,
@@ -639,6 +646,28 @@ function hostedOutputItemToChunk(
     };
   }
   return null;
+}
+
+// Prepends the paper full text as a front block immediately after the system
+// prompt and before conversation history. Used by both OpenAI tool loops.
+// Returns the SAME array reference when no front block is set (no behavior
+// change). The Responses `input` has no leading system item (the system
+// prompt is the separate `instructions` field), so for it the block goes at
+// index 0; Chat Completions keeps the system message at index 0, so the block
+// goes at index 1.
+export function withFrontBlock<T extends { role?: string }>(
+  items: T[],
+  frontBlock: string | undefined,
+): T[] {
+  if (!frontBlock) return items;
+  const block = {
+    role: 'user',
+    content: `[Paper full text]\n${frontBlock}`,
+  } as unknown as T;
+  if (items[0]?.role === 'system') {
+    return [items[0], block, ...items.slice(1)];
+  }
+  return [block, ...items];
 }
 
 export function toOpenAIInput(messages: Message[]): unknown[] {

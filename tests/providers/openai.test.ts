@@ -3,6 +3,7 @@ import {
   OpenAIProvider,
   openAIHostedToolSpecs,
   toOpenAIInput,
+  withFrontBlock,
 } from '../../src/providers/openai';
 import type { ModelPreset } from '../../src/settings/types';
 import type { StreamChunk } from '../../src/providers/types';
@@ -407,6 +408,33 @@ describe('OpenAIProvider', () => {
           { type: 'input_text', text: '</image>' },
         ],
       },
+    ]);
+  });
+});
+
+describe('withFrontBlock', () => {
+  it('returns the list unchanged when no front block is given', () => {
+    const items = [{ role: 'user', content: 'hi' }];
+    expect(withFrontBlock(items, undefined)).toBe(items);
+  });
+
+  it('prepends the front block at index 0 for the Responses input', () => {
+    const items = [{ role: 'user', content: 'hi' }];
+    expect(withFrontBlock(items, 'PAPER')).toEqual([
+      { role: 'user', content: '[Paper full text]\nPAPER' },
+      { role: 'user', content: 'hi' },
+    ]);
+  });
+
+  it('inserts the front block after a leading system message', () => {
+    const items = [
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: 'hi' },
+    ];
+    expect(withFrontBlock(items, 'PAPER')).toEqual([
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: '[Paper full text]\nPAPER' },
+      { role: 'user', content: 'hi' },
     ]);
   });
 });
