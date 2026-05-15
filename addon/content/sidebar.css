@@ -1795,11 +1795,14 @@ div.math-fallback {
   flex: 0 0 auto;
 }
 
-.input-row > .web-search-switcher {
+.input-row > .composer-switchers {
   position: absolute;
   left: 10px;
   bottom: 9px;
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .composer-footer-actions .web-search-trigger,

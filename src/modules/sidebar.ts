@@ -3068,11 +3068,12 @@ function renderInput(doc: Document, mount: HTMLElement, state: PanelState) {
     slashMenu,
     input,
   );
-  row.append(
-    inputStack,
+  const composerSwitchers = el(doc, "div", "composer-switchers");
+  composerSwitchers.append(
     renderWebSearchSwitcher(doc, mount, state),
     renderPaperPinSwitcher(doc, mount, state),
   );
+  row.append(inputStack, composerSwitchers);
   const imageAttach = renderImageAttachButton(
     doc,
     mount,
