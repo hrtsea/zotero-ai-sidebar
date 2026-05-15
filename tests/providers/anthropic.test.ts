@@ -3,6 +3,7 @@ import {
   AnthropicProvider,
   buildAnthropicThinking,
   toAnthropicMessages,
+  toAnthropicSystem,
 } from '../../src/providers/anthropic';
 import {
   MODEL_CATALOG,
@@ -258,6 +259,26 @@ describe('AnthropicProvider', () => {
           },
           { type: 'text', text: '</image>' },
         ],
+      },
+    ]);
+  });
+});
+
+describe('toAnthropicSystem', () => {
+  it('returns a single system block when no front block is given', () => {
+    expect(toAnthropicSystem('SYS', undefined)).toEqual([
+      { type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('appends the paper full text as a second cached block', () => {
+    const blocks = toAnthropicSystem('SYS', 'PAPER BODY');
+    expect(blocks).toEqual([
+      { type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } },
+      {
+        type: 'text',
+        text: '[Paper full text]\nPAPER BODY',
+        cache_control: { type: 'ephemeral', ttl: '1h' },
       },
     ]);
   });
