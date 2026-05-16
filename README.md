@@ -19,17 +19,17 @@ Zotero AI Sidebar is a Zotero 7/8/9 plugin that adds an AI chat panel to the Zot
 - **Read PDF, write notes & highlights** — model-driven tools cover full text, annotations, screenshots, and child notes.
 - **Local-first history + WebDAV config sync** — keep chat history / translation cache local, while syncing presets, prompts, settings, and selected paper annotations through one `state.json` snapshot.
 
-## What's New in v0.4.1
+## What's New in v0.4.2
 
-- **Context-rich AI reading routes**: the built-in Keshav three-pass prompt now emphasizes research context, prior-work lineage, evidence anchors, and a complete third-pass reconstruction route.
-- **Clickable source tracing**: reading-route quote blocks and `Fig.` / `Figure` / table references can jump back to the corresponding PDF passage or figure location from the Zotero note.
-- **Prompt reset clarity**: built-in prompt editors now show whether the local prompt matches the current bundled default, is customized, or has unsaved edits.
-- **Token usage visibility**: assistant responses surface input cache hits, cache misses, output tokens, total input tokens, and cache hit rate when the provider returns usage metadata.
-- **Rendering improvements**: Markdown list handling, reading-route semantic highlights, and mindmap rendering are more robust and covered by tests.
+- **Selection-first PDF context**: when text is selected in the PDF Reader, the next turn sends the selection and nearby context by default instead of automatically attaching the full paper.
+- **Per-turn full-text override**: use `+ 本轮原文` from the composer context bar when a selected-text question really needs the whole PDF; the override resets after sending.
+- **Visible source text in chat history**: selected PDF text is now shown directly in the user message bubble and remains visible in the assistant context block, so older answers still show what passage was asked about.
+- **Jump back to the source selection**: selected-text messages and assistant context controls can jump back to the original PDF passage when locator data is available.
+- **Cleaner Markdown exports**: normal conversation exports now include the PDF selection text for each selected-text turn, while debug exports still include model-input layout and cache diagnostics.
 
 ## Install
 
-1. Download the latest `zotero-ai-sidebar.xpi` from [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) (current stable: [`v0.4.1`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.4.1)).
+1. Download the latest `zotero-ai-sidebar.xpi` from [GitHub Releases](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/latest) (current published release: [`v0.4.1`](https://github.com/xuhan-rgb/zotero-ai-sidebar/releases/tag/v0.4.1); current source/local build version: `0.4.2`).
 2. Open Zotero 7, 8, or 9.
 3. Go to `Tools` -> `Plugins`.
 4. Click the gear icon and choose `Install Plugin From File...`.
@@ -64,13 +64,15 @@ Do not hardcode personal API keys, base URLs, or private model IDs in this repos
 - **Configurable providers**: supports Anthropic, OpenAI, and OpenAI-compatible endpoints through local Zotero preferences. Model presets include connectivity tests and a per-preset model list with a footer switcher.
 - **Quick prompts & slash commands**: customizable prompt buttons next to the composer plus built-in slash commands (`/arxiv-search`, `/web-search`) that expand into explicit instructions for the model.
 - **Markdown output**: renders headings, lists, code blocks, quotes, links, thinking/context blocks, and tool-call traces.
+- **Selection context bar**: when PDF text is selected, the composer shows whether the next turn is `只看选区` or `选区 + 全文`, with a one-turn full-text override and selection preview.
 - **Customizable chat UI**: nickname and avatar (emoji or image URL) for both user and AI, plus configurable position and layout for the per-message action buttons.
-- **Clean / debug copy modes**: copy the conversation as Markdown with just the paper introduction and dialogue, or include tool context, PDF snippets, and thinking summaries for debugging.
+- **Clean / debug copy modes**: copy the conversation as Markdown with the paper introduction, dialogue, and selected PDF text; debug mode also includes tool context, PDF snippets, model-input layout, and thinking summaries.
 
 ### PDF & research tools
 
 - **Model-driven Zotero tools**: follows a Codex-style tool loop; no local keyword/regex intent planner decides what PDF content to send.
 - **PDF context tools**: current item metadata, annotations, PDF search, PDF range reading, full PDF reading, and selected-text context.
+- **Selected-text source tracing**: selected passages are preserved in chat bubbles and Markdown exports, with a jump control back to the original PDF selection when Zotero provides location data.
 - **Image context**: attach screenshots/images so the model can analyze figures, UI states, or PDF screenshots.
 - **Customizable annotation color guide**: edit the natural-language rubric the model uses when picking PDF highlight colors, with a default that maps Zotero's six preset hexes to common review categories (background, problem, method, dataset, results, etc.).
 - **arXiv paper tools**: `paper_search_arxiv` and `paper_fetch_arxiv_fulltext` let the model search arXiv and fetch full text on demand.

@@ -17,7 +17,7 @@ import {
   toApiMessages,
 } from "../context/message-format";
 import { DEFAULT_CONTEXT_POLICY, type ContextPolicy } from "../context/policy";
-import { createPdfLocator } from "../context/pdf-locator";
+import { createPdfLocator, getSharedPdfLocator } from "../context/pdf-locator";
 import { extractPdfRange, searchPdfPassages } from "../context/retrieval";
 import { zoteroContextSource } from "../context/zotero-source";
 import { getProvider } from "../providers/factory";
@@ -125,6 +125,7 @@ import {
   firstPdfQuoteLocateCandidate,
   pdfQuoteBlockLocateText,
   pdfQuoteBlocks,
+  pdfQuoteConfidenceFloor,
   pdfQuoteLinkKey,
   pdfQuoteLocateCandidates,
 } from "./pdf-quote-utils";
@@ -331,7 +332,14 @@ const pdfQuoteLocateCache = new Map<string, Promise<PdfSelectionLocator | null>>
 let readerSelectionHandler: ((event: unknown) => void) | null = null;
 const SELECTION_MONITOR_MS = 60;
 const PDF_QUOTE_MIN_CHARS = 32;
+// Two different ceilings for two different costs:
+// - PDF_QUOTE_MAX_PER_RENDER bounds EAGER pre-location (reading-route notes),
+//   where every quote triggers a full locate up front — kept small.
+// - PDF_QUOTE_BUTTON_LIMIT bounds LAZY button decoration in a rendered
+//   message, where locating only happens on click. Decorating a button is
+//   cheap, so this is just a sanity bound against a pathological message.
 const PDF_QUOTE_MAX_PER_RENDER = 24;
+const PDF_QUOTE_BUTTON_LIMIT = 300;
 
 interface PanelState {
   itemID: number | null;
@@ -6907,6 +6915,7 @@ function scheduleAssistantPdfQuoteLinks(
     {
       sourceItemID: state.itemID,
       preferredAttachmentID: sourceSelection?.attachmentID ?? null,
+      preferredPageIndex: sourceSelection?.pageIndex ?? null,
       onJump: (quote, button) =>
         jumpToPdfQuote(
           mount,
@@ -6915,6 +6924,7 @@ function scheduleAssistantPdfQuoteLinks(
           sourceSelection?.attachmentID ?? null,
           button,
           state.itemID,
+          sourceSelection?.pageIndex ?? null,
         ),
     },
   );
@@ -7620,6 +7630,7 @@ function installZoteroNotePdfJumpLinks(
         quoteData.preferredAttachmentID ?? null,
         link,
         quoteData.sourceItemID ?? state.itemID,
+        quoteData.preferredPageIndex ?? null,
       );
     }
   };
@@ -7654,6 +7665,7 @@ function installZoteroNotePdfJumpLinks(
         quoteData?.preferredAttachmentID ?? null,
         undefined,
         quoteData?.sourceItemID ?? state.itemID,
+        quoteData?.preferredPageIndex ?? null,
       );
       return;
     }
@@ -8697,6 +8709,7 @@ interface PdfQuoteButtonOptions {
   ) => void | Promise<void>;
   sourceItemID?: number | null;
   preferredAttachmentID?: number | null;
+  preferredPageIndex?: number | null;
   quoteLinks?: Map<string, PdfSelectionLocator>;
 }
 
@@ -8706,7 +8719,7 @@ function installPdfQuoteButtonsInElement(
 ): void {
   const blocks = pdfQuoteBlocks(root, PDF_QUOTE_MIN_CHARS).slice(
     0,
-    PDF_QUOTE_MAX_PER_RENDER,
+    PDF_QUOTE_BUTTON_LIMIT,
   );
   if (!blocks.length) return;
   for (const block of blocks) {
@@ -8730,17 +8743,73 @@ type PdfQuoteBlockOptions = PdfQuoteButtonOptions & {
 async function locatePdfQuoteBlock(
   locator: Awaited<ReturnType<typeof createPdfLocator>>,
   rawText: string,
+  preferredPageIndex: number | null = null,
 ): Promise<PdfSelectionLocator | null> {
-  for (const quote of pdfQuoteLocateCandidates(rawText, PDF_QUOTE_MIN_CHARS)) {
-    const result = await locator.locate(quote, { minConfidence: 0.9 });
-    if (!result) continue;
-    return pdfSelectionLocatorFromLocateResult(
-      locator.attachmentID,
-      result.matchedText || quote,
-      result,
+  const scopedPageIndex = normalizedPreferredPageIndex(
+    preferredPageIndex,
+    locator.pageCount,
+  );
+  if (scopedPageIndex != null) {
+    const scoped = await locatePdfQuoteBlockInScope(
+      locator,
+      rawText,
+      scopedPageIndex,
+      false,
     );
+    if (scoped) return scoped;
+  }
+  return locatePdfQuoteBlockInScope(locator, rawText, null, true);
+}
+
+async function locatePdfQuoteBlockInScope(
+  locator: Awaited<ReturnType<typeof createPdfLocator>>,
+  rawText: string,
+  pageIndex: number | null,
+  logMiss: boolean,
+): Promise<PdfSelectionLocator | null> {
+  const candidates = pdfQuoteLocateCandidates(rawText, PDF_QUOTE_MIN_CHARS);
+  let bestConfidence = 0;
+  for (const quote of candidates) {
+    // Locate with no floor, then gate with a length-aware confidence floor
+    // here. Gating ourselves also lets a miss report how close it got — for
+    // diagnosing quotes that fail to jump — without paying for a second scan.
+    const result = await locator.locate(quote, {
+      minConfidence: 0,
+      ...(pageIndex != null ? { pageIndex } : {}),
+    });
+    if (!result) continue;
+    if (result.confidence > bestConfidence) bestConfidence = result.confidence;
+    if (result.confidence >= pdfQuoteConfidenceFloor(quote.length)) {
+      return pdfSelectionLocatorFromLocateResult(
+        locator.attachmentID,
+        result.matchedText || quote,
+        result,
+      );
+    }
+  }
+  if (logMiss && candidates.length) {
+    debugZai("pdf-quote.locate.miss", {
+      candidates: candidates.length,
+      bestConfidence: Number(bestConfidence.toFixed(3)),
+      head: candidates[0]!.slice(0, 80),
+    });
   }
   return null;
+}
+
+function normalizedPreferredPageIndex(
+  pageIndex: number | null | undefined,
+  pageCount: number,
+): number | null {
+  if (
+    typeof pageIndex !== "number" ||
+    !Number.isInteger(pageIndex) ||
+    pageIndex < 0 ||
+    pageIndex >= pageCount
+  ) {
+    return null;
+  }
+  return pageIndex;
 }
 
 async function jumpToPdfQuote(
@@ -8750,6 +8819,7 @@ async function jumpToPdfQuote(
   preferredAttachmentID: number | null = null,
   _button?: HTMLElement,
   sourceItemID: number | null = null,
+  preferredPageIndex: number | null = null,
 ): Promise<void> {
   setTempLoadMarkStatus(mount, "原文定位中");
   try {
@@ -8759,6 +8829,7 @@ async function jumpToPdfQuote(
       itemID,
       quote,
       preferredAttachmentID,
+      preferredPageIndex,
     );
     if (!locator) {
       setTempLoadMarkStatus(mount, "原文未定位");
@@ -8777,6 +8848,7 @@ async function locatePdfQuoteForItem(
   itemID: number | null,
   rawText: string,
   preferredAttachmentID: number | null = null,
+  preferredPageIndex: number | null = null,
 ): Promise<PdfSelectionLocator | null> {
   if (itemID == null) return null;
   const quote = firstPdfQuoteLocateCandidate(rawText, PDF_QUOTE_MIN_CHARS);
@@ -8788,10 +8860,20 @@ async function locatePdfQuoteForItem(
   );
   if (!reader) return null;
   const attachmentID = preferredAttachmentID ?? readerAttachmentID(reader) ?? 0;
-  const cacheKey = [itemID, attachmentID, quote].join("\u0001");
+  const pageKey =
+    preferredPageIndex != null &&
+    Number.isInteger(preferredPageIndex) &&
+    preferredPageIndex >= 0
+      ? preferredPageIndex
+      : "";
+  const cacheKey = [itemID, attachmentID, pageKey, quote].join("\u0001");
   const cached = pdfQuoteLocateCache.get(cacheKey);
   if (cached) return cached;
-  const promise = locatePdfQuoteWithReader(reader, quote).catch((err) => {
+  const promise = locatePdfQuoteWithReader(
+    reader,
+    quote,
+    preferredPageIndex,
+  ).catch((err) => {
     debugZai("pdf-quote.locate.failed", { error: errorMessage(err) });
     return null;
   });
@@ -8803,14 +8885,13 @@ async function locatePdfQuoteForItem(
 async function locatePdfQuoteWithReader(
   reader: unknown,
   quote: string,
+  preferredPageIndex: number | null = null,
 ): Promise<PdfSelectionLocator | null> {
-  let locator: Awaited<ReturnType<typeof createPdfLocator>> | null = null;
-  try {
-    locator = await createPdfLocator(reader);
-    return locatePdfQuoteBlock(locator, quote);
-  } finally {
-    locator?.dispose();
-  }
+  // Reuse a cached locator (see getSharedPdfLocator) instead of rebuilding and
+  // disposing one per click. It is intentionally not disposed here: the
+  // locator lives as long as its Reader and is collected together with it.
+  const locator = await getSharedPdfLocator(reader);
+  return locatePdfQuoteBlock(locator, quote, preferredPageIndex);
 }
 
 function trimPdfQuoteLocateCache(): void {
@@ -8867,6 +8948,7 @@ function wrapPdfQuoteBlock(
       quote,
       options.sourceItemID ?? null,
       options.preferredAttachmentID ?? null,
+      options.preferredPageIndex ?? null,
     );
   }
   if (options.onJump) {
@@ -8947,9 +9029,12 @@ function applyPdfQuoteLinkAttributes(
   quote: string,
   sourceItemID: number | null = null,
   preferredAttachmentID: number | null = null,
+  preferredPageIndex: number | null = null,
 ): void {
   const payload =
-    sourceItemID == null && preferredAttachmentID == null
+    sourceItemID == null &&
+    preferredAttachmentID == null &&
+    preferredPageIndex == null
       ? quote
       : JSON.stringify({
           quote,
@@ -8957,6 +9042,7 @@ function applyPdfQuoteLinkAttributes(
           ...(preferredAttachmentID != null
             ? { preferredAttachmentID }
             : {}),
+          ...(preferredPageIndex != null ? { preferredPageIndex } : {}),
         });
   link.href = `#${NOTE_PDF_QUOTE_HASH_MARKER.slice(1)}${encodeURIComponent(
     payload,
@@ -8969,6 +9055,12 @@ function applyPdfQuoteLinkAttributes(
     link.setAttribute(
       "data-zai-pdf-source-attachment-id",
       String(preferredAttachmentID),
+    );
+  }
+  if (preferredPageIndex != null) {
+    link.setAttribute(
+      "data-zai-pdf-source-page-index",
+      String(preferredPageIndex),
     );
   }
 }

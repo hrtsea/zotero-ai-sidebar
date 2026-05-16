@@ -9,6 +9,7 @@ export interface PdfQuoteNoteLinkData {
   quote: string;
   sourceItemID?: number;
   preferredAttachmentID?: number;
+  preferredPageIndex?: number;
 }
 
 export function pdfSelectionFromNoteLink(
@@ -110,10 +111,12 @@ function pdfQuoteDataFromRaw(raw: string | null): PdfQuoteNoteLinkData | null {
       if (!quote) return { quote: raw };
       const sourceItemID = finiteNumber(data.sourceItemID);
       const preferredAttachmentID = finiteNumber(data.preferredAttachmentID);
+      const preferredPageIndex = finiteNumber(data.preferredPageIndex);
       return {
         quote,
         ...(sourceItemID != null ? { sourceItemID } : {}),
         ...(preferredAttachmentID != null ? { preferredAttachmentID } : {}),
+        ...(preferredPageIndex != null ? { preferredPageIndex } : {}),
       };
     }
   } catch {

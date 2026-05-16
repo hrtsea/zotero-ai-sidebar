@@ -20,6 +20,7 @@ describe("note-pdf-link quote payloads", () => {
           quote: "This is a quote",
           sourceItemID: 42,
           preferredAttachmentID: 7,
+          preferredPageIndex: 3,
         }),
       );
     const link = document.createElement("a");
@@ -32,6 +33,7 @@ describe("note-pdf-link quote payloads", () => {
       quote: "This is a quote",
       sourceItemID: 42,
       preferredAttachmentID: 7,
+      preferredPageIndex: 3,
     });
     expect(pdfQuoteFromNoteLink(link)).toBe("This is a quote");
   });

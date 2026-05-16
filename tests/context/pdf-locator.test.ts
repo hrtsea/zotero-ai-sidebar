@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createPdfLocator } from "../../src/context/pdf-locator";
+import {
+  createPdfLocator,
+  getSharedPdfLocator,
+} from "../../src/context/pdf-locator";
 
 interface FakeTextItem {
   str: string;
@@ -458,6 +461,31 @@ describe("pdf locator", () => {
     expect(hit?.pageSentenceIndex).toBe(1);
   });
 
+});
+
+describe("shared pdf locator cache", () => {
+  it("reuses one locator per reader so repeated jumps skip re-extraction", async () => {
+    const reader = readerWithProcessedPages([
+      processedPage([...processedWord("Alpha", 0, 100)]),
+    ]);
+
+    const first = getSharedPdfLocator(reader);
+    // Same Reader → same promise: createPdfLocator (and its full text-layer
+    // extraction) runs exactly once no matter how many quotes are clicked.
+    expect(getSharedPdfLocator(reader)).toBe(first);
+    expect(await getSharedPdfLocator(reader)).toBe(await first);
+  });
+
+  it("builds a fresh locator for a different reader", () => {
+    const a = readerWithProcessedPages([
+      processedPage([...processedWord("Alpha", 0, 100)]),
+    ]);
+    const b = readerWithProcessedPages([
+      processedPage([...processedWord("Beta", 0, 100)]),
+    ]);
+
+    expect(getSharedPdfLocator(a)).not.toBe(getSharedPdfLocator(b));
+  });
 });
 
 function item(

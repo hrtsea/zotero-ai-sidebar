@@ -337,6 +337,10 @@ export async function createPdfLocator(reader: unknown): Promise<PdfLocator> {
           ? [opts.pageIndex]
           : Array.from({ length: source.pageCount }, (_, index) => index);
       let bestFuzzy: NormalizedMatch | null = null;
+      // Fuzzy scanning a page is synchronous; once page bundles are cached
+      // the whole loop would run as one uninterrupted task. Hand control back
+      // to the event loop every ~30ms so a long scan cannot jank Zotero's UI.
+      let lastYield = Date.now();
       for (const pageIndex of pageIndexes) {
         const page = await bundleFor(pageIndex);
         if (!page || !page.normalizedText) continue;
@@ -360,6 +364,11 @@ export async function createPdfLocator(reader: unknown): Promise<PdfLocator> {
         ) {
           bestFuzzy = fuzzy;
         }
+
+        if (Date.now() - lastYield > 30) {
+          await delay(0);
+          lastYield = Date.now();
+        }
       }
 
       if (!bestFuzzy) return null;
@@ -376,6 +385,31 @@ export async function createPdfLocator(reader: unknown): Promise<PdfLocator> {
       pageLengths.clear();
     },
   };
+}
+
+// Building a locator re-extracts and re-normalizes the entire PDF text layer.
+// When a user clicks several "查看原文" links in a row, doing that per click is
+// the dominant latency. `getSharedPdfLocator` reuses one locator per Reader:
+// the Reader's object identity tracks the open PDF document, so a
+// closed-then-reopened tab produces a fresh Reader (hence a fresh locator)
+// automatically, and a WeakMap lets a discarded Reader and its locator be
+// garbage-collected without any explicit dispose() call.
+const sharedLocators = new WeakMap<object, Promise<PdfLocator>>();
+
+export function getSharedPdfLocator(reader: unknown): Promise<PdfLocator> {
+  if (typeof reader !== "object" || reader === null) {
+    return createPdfLocator(reader);
+  }
+  const cached = sharedLocators.get(reader);
+  if (cached) return cached;
+  // A rejected build (e.g. the PDF view was not ready yet) must not be cached
+  // permanently — drop it so the next click can retry.
+  const created = createPdfLocator(reader).catch((err) => {
+    sharedLocators.delete(reader);
+    throw err;
+  });
+  sharedLocators.set(reader, created);
+  return created;
 }
 
 async function waitForPdfSource(

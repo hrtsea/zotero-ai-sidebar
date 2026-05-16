@@ -1,6 +1,17 @@
 import { splitSentences } from "../translate/sentence-splitter";
 
 const DEFAULT_PDF_QUOTE_MIN_CHARS = 32;
+const PDF_QUOTE_LONG_CHARS = 80;
+
+// Minimum fuzzy-match confidence before a "查看原文" click jumps the reader.
+// A long passage can absorb noise — dropped inline citations like
+// "(Author et al., 2024)", flattened math symbols — and still pinpoint the
+// right place unambiguously, so its bar is lower. A short quote cannot: at
+// 32 chars a 0.7 score is only ~22 matching characters, easily coincidental,
+// so short quotes stay strict.
+export function pdfQuoteConfidenceFloor(quoteLength: number): number {
+  return quoteLength >= PDF_QUOTE_LONG_CHARS ? 0.7 : 0.85;
+}
 
 export function pdfQuoteLocateCandidates(
   rawText: string,
@@ -14,8 +25,23 @@ export function pdfQuoteLocateCandidates(
     compact,
     compactPdfQuoteText(rawText),
     ...sentences,
+    ...ellipsisFragments(compact, minChars),
   ].filter((text) => text.length >= minChars);
   return [...new Set(candidates)];
+}
+
+// Models elide text mid-quote with "..." / "…". The elided gap defeats both
+// exact and fuzzy matching against the PDF, but each non-elided fragment is
+// usually still verbatim — so expose the substantial fragments (longest
+// first, since a longer fragment locates less ambiguously) as extra
+// candidates. Returns nothing when the quote has no ellipsis.
+function ellipsisFragments(compact: string, minChars: number): string[] {
+  if (!/\.{3,}|…/.test(compact)) return [];
+  return compact
+    .split(/\s*(?:\.{3,}|…)\s*/)
+    .map((part) => stripOuterQuoteMarks(part.trim()))
+    .filter((part) => part.length >= minChars)
+    .sort((a, b) => b.length - a.length);
 }
 
 export function firstPdfQuoteLocateCandidate(
