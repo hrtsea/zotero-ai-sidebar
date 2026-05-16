@@ -21,6 +21,48 @@ beforeEach(() => {
 });
 
 describe('formatConversationMarkdown', () => {
+  it('keeps PDF selection text in normal conversation exports', () => {
+    const markdown = formatConversationMarkdown(
+      {
+        itemID: 1,
+        messages: [
+          {
+            role: 'user',
+            content: '请解释当前 PDF 选区的文字。',
+            context: {
+              selectedText: 'Segment Anything Model 2 is a foundational model.',
+            },
+            task: {
+              id: 'task-1',
+              kind: 'selection',
+              title: '选中文字提问',
+              promptPreview: 'Segment Anything Model 2...',
+              createdAt: 1,
+              pdfSelection: {
+                attachmentID: 2,
+                selectedText:
+                  'Segment Anything Model 2 is a foundational model.',
+                pageIndex: 3,
+                pageLabel: '4',
+                position: {},
+              },
+            },
+          },
+          { role: 'assistant', content: '这段介绍 SAM 2。' },
+        ],
+      },
+      false,
+    );
+
+    expect(markdown).toContain('### PDF 选区（第 4 页）');
+    expect(markdown).toContain(
+      'Segment Anything Model 2 is a foundational model.',
+    );
+    expect(markdown.indexOf('### PDF 选区')).toBeLessThan(
+      markdown.indexOf('请解释当前 PDF 选区的文字。'),
+    );
+  });
+
   it('renders the paper front block after the system prompt and before history', () => {
     const markdown = formatConversationMarkdown(
       {

@@ -7,7 +7,9 @@ export interface ClipboardConversationState {
 }
 
 export function messageToClipboard(message: Message, includeDebugContext: boolean): string {
-  if (!includeDebugContext) return message.content;
+  if (!includeDebugContext) {
+    return [...formatTurnSourceMarkdown(message), message.content, ""].join("\n");
+  }
 
   const lines = [`## ${message.role === "user" ? "You" : "AI"}`, ""];
   lines.push(...formatContextMarkdown(message));
@@ -81,6 +83,8 @@ export function formatConversationMarkdown(
       if (message.thinking) {
         lines.push("### 思考过程", "", message.thinking, "");
       }
+    } else {
+      lines.push(...formatTurnSourceMarkdown(message));
     }
     lines.push(message.content, "");
     if (includeDebugContext) {
@@ -89,6 +93,25 @@ export function formatConversationMarkdown(
   }
 
   return lines.join("\n");
+}
+
+function formatTurnSourceMarkdown(message: Message): string[] {
+  if (message.role !== "user") return [];
+  const selectedText =
+    message.context?.selectedText || message.task?.pdfSelection?.selectedText || "";
+  if (!selectedText) return [];
+  const pageLabel = message.task?.pdfSelection
+    ? pdfSelectionPageLabel(message.task.pdfSelection)
+    : "";
+  return [`### PDF 选区${pageLabel}`, "", selectedText, ""];
+}
+
+function pdfSelectionPageLabel(
+  selection: NonNullable<Message["task"]>["pdfSelection"],
+): string {
+  if (!selection) return "";
+  const label = selection.pageLabel ?? String((selection.pageIndex ?? 0) + 1);
+  return label ? `（第 ${label} 页）` : "";
 }
 
 function formatTurnWireLayoutMarkdown(

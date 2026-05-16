@@ -6704,6 +6704,7 @@ function bubble(
   root.append(head);
   if (message.role === "user") {
     renderMessageImages(doc, root, message.images);
+    renderUserPdfSelectionContext(doc, mount, state, root, message);
   }
   const sourceUser =
     message.role === "assistant"
@@ -6754,6 +6755,40 @@ function bubble(
     );
   }
   return root;
+}
+
+function renderUserPdfSelectionContext(
+  doc: Document,
+  mount: HTMLElement,
+  state: PanelState,
+  root: HTMLElement,
+  message: Message,
+) {
+  const locator = message.task?.pdfSelection;
+  const selectedText = message.context?.selectedText || locator?.selectedText || "";
+  if (!selectedText) return;
+
+  const card = el(doc, "div", "bubble-source-selection");
+  const head = el(doc, "div", "bubble-source-selection-head");
+  const label = el(
+    doc,
+    "div",
+    "bubble-source-selection-label",
+    `PDF 选区${locator ? pdfSelectionPageLabel(locator) : ""}`,
+  );
+  head.append(label);
+  if (locator) {
+    const jump = buttonEl(doc, "查看原选区");
+    jump.className = "bubble-source-selection-jump";
+    jump.title = "回到 PDF 原选区，并重新选中这段文字";
+    jump.addEventListener("click", () => {
+      jump.blur();
+      void jumpToPdfSelection(mount, state, locator);
+    });
+    head.append(jump);
+  }
+  card.append(head, el(doc, "div", "bubble-source-selection-text", selectedText));
+  root.append(card);
 }
 
 function renderMessageUsage(
@@ -9350,8 +9385,7 @@ function renderAssistantProcess(
 ) {
   if (!sourceUser?.context) return;
 
-  const hideDirectSelectionContext = sourceUser.context.explainSelection === true;
-  const summary = hideDirectSelectionContext ? "" : contextSummaryLine(sourceUser);
+  const summary = contextSummaryLine(sourceUser);
   const tools = sourceUser.context.toolCalls;
   if (!summary && !tools?.length) return;
 
@@ -9401,6 +9435,16 @@ function renderAssistantProcess(
       contextRow.append(chip);
     }
     body.append(contextRow);
+    if (sourceUser.context.selectedText) {
+      body.append(
+        el(
+          doc,
+          "div",
+          "bubble-context-selected-text",
+          sourceUser.context.selectedText,
+        ),
+      );
+    }
   }
   renderToolTrace(doc, body, tools);
   details.append(body);
