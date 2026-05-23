@@ -154,6 +154,9 @@ export function contextSummaryLine(message: Message): string {
   if (context.candidatePassageCount) {
     return `模型查看 PDF 候选 ${context.candidatePassageCount} 段，最终未发送片段`;
   }
+  if (context.planMode === "bibliography") {
+    return `模型请求 arXiv 参考文献 ${context.bibliographyFiles?.length ?? 0} 个文件 / ${context.bibliographyChars ?? 0} 字`;
+  }
   if (context.fullTextChars) {
     const total = context.fullTextTotalChars;
     const suffix =
@@ -166,7 +169,13 @@ export function contextSummaryLine(message: Message): string {
     if (context.planMode === "remote_paper") {
       return `模型请求远程 arXiv 论文文本 ${context.fullTextChars}${suffix}`;
     }
-    return `已随本轮发送 PDF 全文 ${context.fullTextChars}${suffix}`;
+    const label =
+      context.fullTextSource === "arxiv"
+        ? "arXiv LaTeX 源码"
+        : context.fullTextSource === "arxiv_toc"
+          ? "arXiv 章节目录"
+          : "PDF 全文";
+    return `已随本轮发送 ${label} ${context.fullTextChars}${suffix}`;
   }
   if (context.toolCalls?.length) {
     const completed = context.toolCalls.filter(
@@ -228,6 +237,9 @@ export function formatContextMarkdown(message: Message): string[] {
       );
     }
     lines.push("");
+  }
+  if (context.frontBlockDebugPath) {
+    lines.push(`- 原文调试文件: \`${context.frontBlockDebugPath}\``, "");
   }
   if (context.toolCalls?.length) {
     lines.push(`- 工具调用: ${formatToolTraceInline(context.toolCalls)}`, "");
@@ -323,6 +335,14 @@ export function formatContextLedger(messages: Message[]): string {
     }
     if (context.annotations?.length)
       parts.push(`annotations=${context.annotations.length}`);
+    if (context.bibliographyChars) {
+      parts.push(`bibliography_chars=${context.bibliographyChars}`);
+      if (context.bibliographyFiles?.length) {
+        parts.push(
+          `bibliography_files=${JSON.stringify(context.bibliographyFiles)}`,
+        );
+      }
+    }
     if (context.retainedContextCount) {
       parts.push(`retained_contexts=${context.retainedContextCount}`);
       parts.push(`retained_context_chars=${context.retainedContextChars ?? 0}`);

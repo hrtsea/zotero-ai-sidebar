@@ -19,6 +19,11 @@ import {
 import { DEFAULT_CONTEXT_POLICY, type ContextPolicy } from "../context/policy";
 import { createPdfLocator, getSharedPdfLocator } from "../context/pdf-locator";
 import { extractPdfRange, searchPdfPassages } from "../context/retrieval";
+import { ensureArxivSource } from "../context/arxiv-source";
+import { hasArxivSource } from "../context/arxiv-store";
+import { buildArxivTocFrontBlock } from "../context/arxiv-tools";
+import { toolsForPinnedFullTextTurn } from "../context/tool-filter";
+import { isArxivTocBlock } from "../context/tex-sections";
 import { zoteroContextSource } from "../context/zotero-source";
 import { getProvider } from "../providers/factory";
 import type {
@@ -90,6 +95,7 @@ import {
   formatConversationMarkdown,
   messageToClipboard,
 } from "./clipboard-format";
+import { saveFrontBlockDebugFileOnce } from "./front-block-debug-file";
 import {
   clearPendingSidebarCopy,
   copyToClipboard,
@@ -271,6 +277,7 @@ const ZOTERO_TOOL_MANUAL = [
   "- The ledger includes prior source identity, ranges, and tool summaries. Use it as structured memory to distinguish the current Zotero item from remote papers named by URLs and to choose the needed context size.",
   "- Use chat_get_previous_context when the ledger says relevant snippets were already attached in this chat and the raw text is needed again. This is a read-only chat-history tool; it does not fetch Zotero, arXiv, or web content.",
   "- Use zotero_get_full_pdf when the model decides the whole current Zotero PDF is needed for reading, summary, review, comparison, or analysis. Prior full-PDF sends appear in the ledger as source/range metadata so the model can choose between current history, targeted ranges, fresh full text, or asking the user for a resend.",
+  "- If the front block is an arXiv section index, it is only a table of contents, not the paper body. For whole-paper summaries/reviews/comparisons, call zotero_get_full_pdf before answering; for a specific section, call arxiv_get_section; for a figure referenced in LaTeX, call arxiv_get_figure; for references/citations/bibliography, call arxiv_get_bibliography.",
   "- Use zotero_search_pdf for targeted concepts, figures, experiments, equations, claims, definitions, section/chapter headings, and local evidence; use zotero_read_pdf_range only to expand cache-based ranges from prior tool output or the ledger.",
   "- Use zotero_get_annotations when the user asks about existing Zotero highlights, notes, comments, annotations, or reading marks.",
   "- Use zotero_get_current_pdf_selection when the user asks to inspect, print, translate, explain, or reason about the current PDF selection and [Selected PDF text] was not already supplied. This is read-only and follows the Zotero Reader selection snapshot used by annotation creation.",
@@ -686,7 +693,7 @@ function renderToolbar(doc: Document, mount: HTMLElement, state: PanelState) {
               state.itemID,
               zoteroContextSource,
               contextPolicy,
-              { force: true },
+              { force: shouldExportWholePaperFrontBlock(state.messages) },
             );
           }
         }
@@ -1303,10 +1310,22 @@ function renderContextCard(doc: Document, itemID: number | null) {
       ? item.getField("title") || "未选择条目"
       : "未选择条目";
   const card = el(doc, "div", "ctx-card");
-  card.append(
-    el(doc, "div", "ctx-title", title),
-    el(doc, "div", "ctx-meta", `Item ID: ${itemID ?? "none"}`),
-  );
+  const metaRow = el(doc, "div", "ctx-meta", `Item ID: ${itemID ?? "none"}`);
+  card.append(el(doc, "div", "ctx-title", title), metaRow);
+  // When the active item has a cached arXiv LaTeX source, append a badge.
+  // hasArxivSource is async, so render the row first and attach the badge
+  // afterwards rather than blocking the synchronous header build.
+  const itemKey = itemID != null ? getZoteroItem(itemID)?.key : undefined;
+  if (typeof itemKey === "string") {
+    void hasArxivSource(itemKey).then((has) => {
+      if (!has || !metaRow.isConnected) return;
+      const arxivBadge = doc.createElement("span");
+      arxivBadge.className = "arxiv-source-badge";
+      arxivBadge.textContent = "LaTeX 源";
+      arxivBadge.title = "正在使用 arXiv LaTeX 源码分析（公式精确）";
+      metaRow.append(arxivBadge);
+    });
+  }
   return card;
 }
 
@@ -3451,6 +3470,25 @@ function messagesContainPaperFrontBlock(messages: Message[]): boolean {
   });
 }
 
+function shouldExportWholePaperFrontBlock(messages: Message[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const context = messages[i].context;
+    if (
+      !context?.fullTextChars ||
+      context.planMode === "reader_pdf_text" ||
+      context.planMode === "remote_paper"
+    ) {
+      continue;
+    }
+    return (
+      context.pinnedFullTextForced === true ||
+      context.fullTextSource === "arxiv" ||
+      context.fullTextSource === "pdf"
+    );
+  }
+  return false;
+}
+
 function normalizeSelectionForTurnMode(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -3595,8 +3633,8 @@ function renderPaperPinSwitcher(
   trigger.title = !hasItem
     ? "请先在 Zotero 中选择一篇有 PDF 的论文"
     : on
-      ? "原文固定已开启：每轮把论文全文钉在对话最前面，模型始终基于完整原文回答；全文已缓存以降低重复发送成本。点击关闭。"
-      : '点击开启：把论文全文固定在每轮对话最前面，避免回答退化成“摘要的摘要”，并让全文可被缓存复用。';
+      ? "原文固定已开启：PDF 条目每轮固定全文；arXiv 源条目默认固定章节目录，模型按需读取章节或升级全文。点击关闭。"
+      : "点击开启：把论文原文上下文固定在每轮对话最前面；arXiv 源默认先固定章节目录以便缓存复用。";
   trigger.disabled = !hasItem || state.sending;
   trigger.addEventListener("click", () => {
     if (state.itemID == null) return;
@@ -4379,6 +4417,13 @@ async function streamAssistant(
         promptCacheLedger: contextLedger,
       };
     }
+    // Download the arXiv LaTeX source (if this is an arXiv item and not
+    // already cached) before context assembly, so getFullText can prefer it.
+    // A false result must not block analysis — the PDF flow proceeds normally.
+    let arxivSourceUsed = false;
+    if (state.itemID != null) {
+      arxivSourceUsed = await ensureArxivSourceForItem(state.itemID);
+    }
     const baseContext = await buildSystemContextOnly(state.itemID);
     const pinnedFullText = await resolvePinnedFullText(
       state.itemID,
@@ -4391,10 +4436,22 @@ async function streamAssistant(
       },
     );
     if (pinnedFullText) {
+      const fullTextSource = isArxivTocBlock(pinnedFullText)
+        ? "arxiv_toc"
+        : arxivSourceUsed && forcePinnedFullText
+          ? "arxiv"
+          : "pdf";
+      const frontBlockDebugPath = await saveDebugFrontBlockForState(
+        state,
+        pinnedFullText,
+        fullTextSource,
+      );
       const planReason = forcePinnedFullText
         ? "用户本轮点击“+ 本轮原文”，PDF 选区、附近上下文和论文全文一起发送；长期“原文”状态不变"
         : (userMessage.context?.planReason ??
-          "手动“原文”开关已开启，论文全文作为前置块发送");
+          (fullTextSource === "arxiv_toc"
+            ? "手动“原文”开关已开启；当前为 arXiv 源，先发送稳定章节目录，模型按需调用 arxiv_get_section、arxiv_get_bibliography 或 zotero_get_full_pdf 读取正文/参考文献"
+            : "手动“原文”开关已开启，论文全文作为前置块发送"));
       userMessage.context = {
         ...userMessage.context,
         planMode: forcePinnedFullText
@@ -4406,6 +4463,8 @@ async function streamAssistant(
           userMessage.context?.sourceID ??
           (state.itemID != null ? String(state.itemID) : undefined),
         fullTextChars: pinnedFullText.length,
+        fullTextSource,
+        ...(frontBlockDebugPath ? { frontBlockDebugPath } : {}),
         rangeStart: userMessage.context?.rangeStart ?? 0,
         rangeEnd: userMessage.context?.rangeEnd ?? pinnedFullText.length,
       };
@@ -4424,6 +4483,9 @@ async function streamAssistant(
       selectionAnnotation: () => getStoredSelectionAnnotation(state.itemID),
       fullTextHighlight: options.fullTextHighlight,
       annotationColorGuide: loadToolSettings(zoteroPrefs()).annotationColorGuide,
+      debugFullTextSaver: state.copyDebugContext
+        ? (text, meta) => saveDebugFrontBlockForState(state, text, meta.source)
+        : undefined,
       getActiveReader: () =>
         getReaderForCurrentSelection(mount.ownerDocument!.defaultView, state.itemID),
       // Curry the live document and itemID so the model writes to whatever
@@ -4746,6 +4808,51 @@ function configuredAnnotationColors(): Set<string> {
   );
 }
 
+// Ensures the arXiv LaTeX source is downloaded for an item (idempotent;
+// cached after first success). Returns true when a source cache is available.
+async function ensureArxivSourceForItem(itemID: number): Promise<boolean> {
+  const item = getZoteroItem(itemID);
+  if (!item || typeof item.key !== "string") return false;
+  // arXiv papers imported as a PDF often carry the arXiv URL on the PDF
+  // ATTACHMENT, not the parent item — so gather metadata from both.
+  const sources: NonNullable<ReturnType<typeof getZoteroItem>>[] = [item];
+  try {
+    for (const attID of item.getAttachments?.() ?? []) {
+      const att = getZoteroItem(attID);
+      if (att) sources.push(att);
+    }
+  } catch {
+    // attachment enumeration is best-effort
+  }
+  const pick = (field: string): string | undefined => {
+    for (const src of sources) {
+      const value = src.getField?.(field);
+      if (value) return value;
+    }
+    return undefined;
+  };
+  const ok = await ensureArxivSource({
+    itemKey: item.key,
+    fields: {
+      extra: pick("extra"),
+      url: pick("url"),
+      doi: pick("DOI"),
+      archiveID: pick("archiveID"),
+    },
+  });
+  if (ok) {
+    // The arXiv LaTeX source supersedes any frozen PDF full text — clear the
+    // stale freeze so normal context assembly uses the compact TOC, while
+    // explicit full-text requests can re-extract the source body.
+    try {
+      await freezeFullText(itemID, "");
+    } catch {
+      // best-effort
+    }
+  }
+  return ok;
+}
+
 // When the "原文" toggle is on for this item, resolve the frozen full text to
 // pin as the provider front block. If pinned but nothing is frozen yet (user
 // toggled on before any fetch), extract once and freeze. Returns undefined
@@ -4760,14 +4867,50 @@ async function resolvePinnedFullText(
   if (!options.force) {
     if (options.suppressPinned) return undefined;
     if (!(await isPaperPinned(itemID))) return undefined;
+    // For arXiv items, the default pinned block is a compact TOC, not the
+    // full source. Keep it out of the generic full-text cache so
+    // zotero_get_full_pdf can still upgrade to the actual LaTeX body.
+    const tocBlock = await buildArxivTocFrontBlock(itemID);
+    if (tocBlock) return tocBlock;
   }
   const frozen = await getFrozenFullText(itemID);
-  if (frozen != null) return frozen;
+  if (frozen != null && !isArxivTocBlock(frozen)) return frozen;
   const pdfText = await source.getFullText(itemID);
   if (!pdfText) return undefined;
   const text = truncateByTokenBudget(pdfText, policy.fullPdfTokenBudget);
   await freezeFullText(itemID, text);
   return text;
+}
+
+async function saveDebugFrontBlockForState(
+  state: Pick<PanelState, "copyDebugContext" | "itemID">,
+  text: string,
+  source: "arxiv" | "arxiv_toc" | "pdf",
+): Promise<string | undefined> {
+  if (!state.copyDebugContext) return undefined;
+  try {
+    const path = await saveFrontBlockDebugFileOnce({
+      enabled: true,
+      itemID: state.itemID,
+      source,
+      text,
+    });
+    if (path) {
+      debugZai("prompt.front_block.debug_file", {
+        path,
+        source,
+        chars: text.length,
+      });
+    }
+    return path;
+  } catch (err) {
+    debugZai("prompt.front_block.debug_file.failed", {
+      source,
+      chars: text.length,
+      error: errorMessage(err),
+    });
+    return undefined;
+  }
 }
 
 async function buildSystemContextOnly(
@@ -4904,32 +5047,6 @@ function presetFlagHint(preset: ModelPreset): string {
     return "非官方 endpoint：默认发送 prompt_cache_key + session_id；缓存测试失败会自动关闭。";
   }
   return "非官方 endpoint：relay cache 已禁用；缓存测试可重新验证。";
-}
-
-function toolsForPinnedFullTextTurn(
-  tools: ZoteroAgentToolSession["tools"],
-  message: Message,
-  options: StreamAssistantOptions,
-): ZoteroAgentToolSession["tools"] {
-  if (!shouldKeepToolsWithPinnedFullText(message, options)) return [];
-  // With the whole paper pinned, read tools are redundant. Only keep tools
-  // for explicit write/export workflows where the model must modify Zotero.
-  const redundantWhenPinned = new Set([
-    "chat_get_previous_context",
-    "zotero_get_full_pdf",
-  ]);
-  return tools.filter((tool) => !redundantWhenPinned.has(tool.name));
-}
-
-function shouldKeepToolsWithPinnedFullText(
-  message: Message,
-  options: StreamAssistantOptions,
-): boolean {
-  if (options.fullTextHighlight) return true;
-  const text = message.content.toLowerCase();
-  return /标注|注释|高亮|划线|写入|保存|追加|加到.*笔记|保存.*笔记|新增文字|文字框|思维导图|脑图|mindmap|annotat|highlight|save|append|write.*note|mind ?map/.test(
-    text,
-  );
 }
 
 function buildPromptCacheDebug(args: {

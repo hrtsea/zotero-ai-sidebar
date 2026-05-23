@@ -4,6 +4,7 @@ import {
   createZoteroAgentToolSession,
 } from "../../src/context/agent-tools";
 import type { ContextSource } from "../../src/context/builder";
+import { writeArxivSource } from "../../src/context/arxiv-store";
 
 const source: ContextSource = {
   getItem: async () => null,
@@ -519,6 +520,10 @@ describe("createZoteroAgentTools", () => {
       "zotero_search_pdf",
       "zotero_read_pdf_range",
       "zotero_get_full_pdf",
+      "arxiv_list_sections",
+      "arxiv_get_figure",
+      "arxiv_get_section",
+      "arxiv_get_bibliography",
       "draw_article_mindmap",
       "paper_search_arxiv",
       "paper_fetch_arxiv_fulltext",
@@ -565,6 +570,100 @@ describe("createZoteroAgentTools", () => {
       fullTextTruncated: true,
       rangeStart: 0,
       rangeEnd: 8,
+    });
+  });
+
+  it("does not treat a cached arXiv TOC block as the full PDF body", async () => {
+    const toc = "[arXiv paper — section index]\nSections only";
+    paperCacheStore = JSON.stringify({
+      "item:1": {
+        pinned: true,
+        fullText: toc,
+        charCount: toc.length,
+        capturedAt: "2026-05-23T00:00:00.000Z",
+        source: "full_pdf",
+      },
+    });
+    const session = createZoteroAgentToolSession({
+      source: {
+        ...source,
+        getFullText: async () => "REAL FULL LATEX",
+      },
+      itemID: 1,
+    });
+    const tool = session.tools.find(
+      (candidate) => candidate.name === "zotero_get_full_pdf",
+    );
+
+    const result = await tool!.execute({});
+
+    expect(result.frontBlock).toBe("REAL FULL LATEX");
+    expect(result.frontBlock).not.toBe(toc);
+    expect(result.context?.fullTextChars).toBe("REAL FULL LATEX".length);
+  });
+
+  it("lets the model read cached arXiv bibliography files on demand", async () => {
+    const fs = new Map<string, string | Uint8Array>();
+    Object.defineProperty(globalThis, "IOUtils", {
+      configurable: true,
+      value: {
+        makeDirectory: async () => undefined,
+        writeUTF8: async (p: string, d: string) => void fs.set(p, d),
+        write: async (p: string, d: Uint8Array) => void fs.set(p, d),
+        readUTF8: async (p: string) => {
+          const value = fs.get(p);
+          if (value == null) throw new Error("missing file");
+          return typeof value === "string"
+            ? value
+            : new TextDecoder().decode(value);
+        },
+        read: async (p: string) => fs.get(p) as Uint8Array,
+        exists: async (p: string) => fs.has(p),
+      },
+    });
+    Object.defineProperty(globalThis, "Zotero", {
+      configurable: true,
+      value: {
+        ...(globalThis as any).Zotero,
+        Items: {
+          ...(globalThis as any).Zotero.Items,
+          get: () => ({ key: "BIBKEY01" }),
+        },
+      },
+    });
+    await writeArxivSource(
+      "BIBKEY01",
+      [
+        { path: "main.tex", bytes: new TextEncoder().encode("\\bibliography{references}") },
+        {
+          path: "main.bbl",
+          bytes: new TextEncoder().encode("\\bibitem{pi0} Pi zero paper."),
+        },
+        {
+          path: "references.bib",
+          bytes: new TextEncoder().encode("@article{ignored}"),
+        },
+      ],
+      {
+        itemKey: "BIBKEY01",
+        arxivId: "2504.16054",
+        fetchedAt: "2026-05-23T00:00:00.000Z",
+        mainTexRelPath: "main.tex",
+        status: "ok",
+      },
+    );
+    const session = createZoteroAgentToolSession({ source, itemID: 1 });
+    const tool = session.tools.find((t) => t.name === "arxiv_get_bibliography")!;
+
+    const result = await tool.execute({});
+
+    expect(result.output).toContain("[arXiv bibliography file: main.bbl]");
+    expect(result.output).toContain("\\bibitem{pi0} Pi zero paper.");
+    expect(result.output).not.toContain("@article{ignored}");
+    expect(result.context).toMatchObject({
+      planMode: "bibliography",
+      bibliographyChars: result.output.length,
+      bibliographyFiles: ["main.bbl"],
     });
   });
 
@@ -874,6 +973,36 @@ describe("createZoteroAgentTools", () => {
     expect(result.output).not.toContain("PAPER BODY");
     expect(result.output).toContain("[Paper full text]");
     expect(result.context?.planMode).toBe("full_pdf");
+  });
+
+  it("zotero_get_full_pdf can save the exact debug front block once", async () => {
+    let savedText = "";
+    let savedMeta: unknown = null;
+    const session = createZoteroAgentToolSession({
+      source: {
+        ...source,
+        getFullText: async () => "PAPER BODY",
+      },
+      itemID: 1,
+      debugFullTextSaver: async (text, meta) => {
+        savedText = text;
+        savedMeta = meta;
+        return "/tmp/zotero-data/zotero-ai-sidebar/prompt-front-blocks/item-1-pdf.txt";
+      },
+    });
+    const tool = session.tools.find((t) => t.name === "zotero_get_full_pdf")!;
+    const result = await tool.execute({});
+
+    expect(savedText).toBe("PAPER BODY");
+    expect(savedMeta).toMatchObject({
+      source: "pdf",
+      tool: "zotero_get_full_pdf",
+    });
+    expect(result.context).toMatchObject({
+      frontBlockDebugPath:
+        "/tmp/zotero-data/zotero-ai-sidebar/prompt-front-blocks/item-1-pdf.txt",
+      fullTextSource: "pdf",
+    });
   });
 
   it("zotero_get_full_pdf reuses a frozen cache entry without re-extracting", async () => {

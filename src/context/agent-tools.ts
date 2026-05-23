@@ -11,6 +11,18 @@ import { createPaperTools } from "./paper-tools";
 import { createPdfLocator, type PdfLocator } from "./pdf-locator";
 import { DEFAULT_CONTEXT_POLICY, type ContextPolicy } from "./policy";
 import { extractPdfRange, searchPdfPassages } from "./retrieval";
+import {
+  currentItemKey,
+  loadArxivBibliography,
+  loadArxivSections,
+  loadArxivFigureAsImage,
+} from "./arxiv-tools";
+import { hasArxivSource } from "./arxiv-store";
+import { findSection, buildToc, isArxivTocBlock } from "./tex-sections";
+import {
+  normalizeLatexListEnvironments,
+  normalizeLatexSourceCommands,
+} from "./tex-clean";
 import type { MessageContext } from "./types";
 
 // Codex-style local harness for Zotero. Each tool is a structured function
@@ -52,6 +64,13 @@ export interface ToolFactoryOptions {
     usedBetterNotes: boolean;
   }>;
   onMindmapReady?: (data: MindmapData) => void;
+  debugFullTextSaver?: (
+    text: string,
+    meta: {
+      source: NonNullable<MessageContext["fullTextSource"]>;
+      tool: string;
+    },
+  ) => Promise<string | undefined>;
 }
 
 export interface ZoteroAgentToolSession {
@@ -237,6 +256,10 @@ export function createZoteroAgentToolSession(
         // Reuse a frozen copy if one exists (cache-existence check); only
         // extract when there is no usable cache.
         let text = await getFrozenFullText(itemID);
+        if (text != null && isArxivTocBlock(text)) text = null;
+        if (text != null) {
+          text = normalizeLatexSourceCommands(normalizeLatexListEnvironments(text));
+        }
         let truncated = false;
         let totalChars = 0;
         let sourceContext: Awaited<ReturnType<typeof zoteroSourceContext>>;
@@ -257,6 +280,11 @@ export function createZoteroAgentToolSession(
           totalChars = text.length;
           sourceContext = await zoteroSourceContext(options, itemID);
         }
+        const fullTextSource = await fullTextSourceForTool(options);
+        const frontBlockDebugPath = await options.debugFullTextSaver?.(text, {
+          source: fullTextSource,
+          tool: "zotero_get_full_pdf",
+        });
         return {
           output: [
             "Full paper text is now provided at the top of this turn under",
@@ -271,8 +299,140 @@ export function createZoteroAgentToolSession(
             fullTextChars: text.length,
             fullTextTotalChars: totalChars,
             fullTextTruncated: truncated,
+            fullTextSource,
+            ...(frontBlockDebugPath ? { frontBlockDebugPath } : {}),
             rangeStart: 0,
             rangeEnd: text.length,
+          },
+        };
+      },
+    },
+    {
+      name: "arxiv_list_sections",
+      description:
+        "List the table of contents of the current arXiv paper's cached LaTeX source as JSON: each entry is {number, level, title, label?, bodyChars}. Use this to discover what sections exist (and how big each is) BEFORE deciding to fetch one with arxiv_get_section, so you do not pull a 30 KB section when a 2 KB one suffices. Only works when the current Zotero item has a cached arXiv source — when not, fall back to the PDF tools (zotero_search_pdf / zotero_read_pdf_range / zotero_get_full_pdf).",
+      parameters: objectSchema({}),
+      execute: async () => {
+        const loaded = await loadArxivSections(options);
+        if (!loaded)
+          return errorResult(
+            "This item has no cached arXiv source — use the PDF tools instead.",
+          );
+        const toc = buildToc(loaded.sections);
+        if (!toc.length)
+          return errorResult(
+            "The cached arXiv source has no detectable sections.",
+          );
+        return {
+          output: `[arXiv sections]\n${JSON.stringify(toc, null, 2)}`,
+          summary: `列出 arXiv 章节 ${toc.length} 个`,
+        };
+      },
+    },
+    {
+      name: "arxiv_get_figure",
+      description:
+        "Fetch a cached figure of the current arXiv paper and attach it as an image the model can SEE in a follow-up multimodal turn. `name` is the figure file's basename (e.g. 'robot_system_overview'), an exact relative path ('figures/attention_mask.png'), or a unique substring of the name. Look for candidate names in the LaTeX `\\includegraphics{...}` references that appear in section bodies fetched via arxiv_get_section. Only raster figures (PNG/JPG/GIF/WebP) are returned — vector figures stored as .pdf/.eps cannot be sent. Only works when the current item has a cached arXiv source.",
+      parameters: objectSchema(
+        {
+          name: stringSchema(
+            "Figure basename, relative path, or substring (e.g. 'robot_system_overview').",
+          ),
+        },
+        ["name"],
+      ),
+      execute: async (args) => {
+        const parsed = objectArgs(args);
+        const name = stringArg(parsed, "name").trim();
+        if (!name)
+          return errorResult(
+            "arxiv_get_figure requires a non-empty `name` argument.",
+          );
+        const loaded = await loadArxivFigureAsImage(options, name);
+        if (!loaded)
+          return errorResult(
+            `No cached raster figure matched: ${name}. The figure may be vector-only (.pdf/.eps), absent from the source, or the item has no cached arXiv source.`,
+          );
+        return {
+          output: `[arXiv figure attached: ${loaded.path}]`,
+          summary: `读取 arXiv 图: ${loaded.path}`,
+          images: [loaded.image],
+        };
+      },
+    },
+    {
+      name: "arxiv_get_section",
+      description:
+        "Return the LaTeX body of ONE section of the current arXiv paper's cached source. `section` accepts the dotted number (e.g. '3.1'), the LaTeX label (e.g. 'sec:method'), or a case-insensitive substring of the section title (e.g. 'methodology'). Prefer this over re-reading the whole paper whenever the user's question is scoped to a specific section. Only works when the current item has a cached arXiv source.",
+      parameters: objectSchema(
+        {
+          section: stringSchema(
+            "Section number ('3.1'), label ('sec:method'), or title substring ('methodology').",
+          ),
+        },
+        ["section"],
+      ),
+      execute: async (args) => {
+        const loaded = await loadArxivSections(options);
+        if (!loaded)
+          return errorResult(
+            "This item has no cached arXiv source — use the PDF tools instead.",
+          );
+        const parsed = objectArgs(args);
+        const key = stringArg(parsed, "section").trim();
+        if (!key)
+          return errorResult(
+            "arxiv_get_section requires a non-empty `section` argument.",
+          );
+        const found = findSection(loaded.sections, key);
+        if (!found) return errorResult(`No section matched: ${key}`);
+        const body = normalizeLatexSourceCommands(
+          normalizeLatexListEnvironments(found.body),
+        );
+        return {
+          output: `[arXiv §${found.number} ${found.title}]\n${body}`,
+          summary: `读取 arXiv §${found.number} ${found.title} (${body.length} 字)`,
+          context: {
+            planMode: "full_pdf",
+            sourceKind: "zotero_item",
+            sourceID:
+              options.itemID != null ? String(options.itemID) : undefined,
+            fullTextChars: body.length,
+            fullTextSource: "arxiv",
+          },
+        };
+      },
+    },
+    {
+      name: "arxiv_get_bibliography",
+      description:
+        "Read the current arXiv paper's cached bibliography files. Prefer this when the user asks about references, citation keys, related works cited by the paper, or when the cleaned full LaTeX source only contains `\\bibliography{...}` without expanded entries. Returns compiled .bbl files when available; otherwise returns .bib files. Only works when the current item has a cached arXiv source.",
+      parameters: objectSchema({}),
+      execute: async () => {
+        const loaded = await loadArxivBibliography(options);
+        if (!loaded)
+          return errorResult(
+            "This item has no cached arXiv source — use the PDF tools or web search instead.",
+          );
+        if (!loaded.files.length)
+          return errorResult(
+            "The cached arXiv source has no .bbl or .bib bibliography files.",
+          );
+        const blocks = loaded.files.map(
+          (file) => `[arXiv bibliography file: ${file.path}]\n${file.text}`,
+        );
+        const text = blocks.join("\n\n");
+        const output = truncateByTokenBudget(text, policy.fullPdfTokenBudget);
+        return {
+          output,
+          summary: `读取 arXiv 参考文献 ${loaded.files.length} 个文件 (${output.length}/${text.length} 字)`,
+          context: {
+            planMode: "bibliography",
+            sourceKind: "zotero_item",
+            sourceID:
+              options.itemID != null ? String(options.itemID) : undefined,
+            bibliographyChars: output.length,
+            bibliographyFiles: loaded.files.map((file) => file.path),
           },
         };
       },
@@ -481,6 +641,19 @@ async function getToolPdfText(
   itemID: number,
 ): Promise<string> {
   return options.source.getFullText(itemID);
+}
+
+async function fullTextSourceForTool(
+  options: ToolFactoryOptions,
+): Promise<NonNullable<MessageContext["fullTextSource"]>> {
+  try {
+    const key = currentItemKey(options);
+    if (key && (await hasArxivSource(key))) return "arxiv";
+  } catch {
+    // Fall back to the generic PDF label; source tagging is only debug
+    // metadata and must not make the full-text tool fail.
+  }
+  return "pdf";
 }
 
 function readablePdfTextError(): string {

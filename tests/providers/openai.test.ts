@@ -221,6 +221,46 @@ describe('OpenAIProvider', () => {
     });
   });
 
+  it('sends relay session header on Responses tool-loop requests', async () => {
+    const p = new OpenAIProvider();
+    for await (const _ of p.stream(
+      [{ role: 'user', content: '总结当前论文' }],
+      'be helpful',
+      {
+        ...preset,
+        baseUrl: 'https://relay.example/openai',
+      },
+      new AbortController().signal,
+      {
+        promptCacheKey: 'zai:openai:preset-1:gpt-5.5:item-3',
+        tools: [
+          {
+            name: 'zotero_get_full_pdf',
+            description: 'Read the current PDF.',
+            parameters: { type: 'object', properties: {} },
+            execute: async () => ({
+              output: 'Full paper text is now provided at the top.',
+              frontBlock: 'FULL PAPER',
+            }),
+          },
+        ],
+        maxToolIterations: 1,
+      },
+    )) {
+      // Drain the stream so both tool-loop requests are issued.
+    }
+
+    expect(requestLog.requests).toHaveLength(2);
+    for (const request of requestLog.requests) {
+      expect(request.prompt_cache_key).toBe(
+        'zai:openai:preset-1:gpt-5_5:item-3',
+      );
+      expect(request.headers).toEqual({
+        session_id: 'zai:openai:preset-1:gpt-5_5:item-3',
+      });
+    }
+  });
+
   it('does not send relay cache keys after cache test disables the preset', async () => {
     const p = new OpenAIProvider();
     for await (const _ of p.stream(

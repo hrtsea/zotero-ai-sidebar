@@ -47,6 +47,18 @@ export interface ContextPolicy {
   // pinning hundreds of MB into JS memory for absurdly long PDFs.
   fullTextCacheReadCharLimit: number;
 
+  // --- Formula repair diagnostics --------------------------------------
+  // Heuristic-only detector for PDF-cache formula garble. It marks
+  // vertically fragmented math-like text runs so a future repair pipeline can
+  // locate/crop/transcribe them; it must stay conservative around clean prose.
+  garbledFormulaMinRunLines: number;
+  garbledFormulaShortLineChars: number;
+  garbledFormulaMaxLineChars: number;
+  garbledFormulaAsciiLineMaxChars: number;
+  garbledFormulaMinMathLineFraction: number;
+  garbledFormulaMinShortLineFraction: number;
+  garbledFormulaMinFormulaPunctuation: number;
+
   // --- Tool-loop safety fuse --------------------------------------------
   // Hard ceiling on agent tool iterations per turn. INVARIANT: this is a
   // *safety fuse* that prevents runaway loops — it is NOT routing logic
@@ -61,6 +73,14 @@ export interface ContextPolicy {
   // Confidence threshold for `pdfLocator.locate` to accept a fuzzy passage
   // match. Below this we refuse to write an annotation to avoid mis-pinning.
   minLocateConfidence: number;
+  formulaRenderScale: number;
+  formulaRenderMaxEdgePx: number;
+  formulaCropPaddingPt: number;
+  maxFiguresPerPaper: number;
+  transcribeBatchSize: number;
+  paperBuildTimeoutMs: number;
+  maxArxivSourceBytes: number;
+  arxivFetchTimeoutMs: number;
 }
 
 export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
@@ -77,8 +97,23 @@ export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
   maxSearchTopK: 8,
   maxSelectedPassages: 3,
   fullTextCacheReadCharLimit: 400_000,
+  garbledFormulaMinRunLines: 5,
+  garbledFormulaShortLineChars: 3,
+  garbledFormulaMaxLineChars: 100,
+  garbledFormulaAsciiLineMaxChars: 32,
+  garbledFormulaMinMathLineFraction: 0.25,
+  garbledFormulaMinShortLineFraction: 0.35,
+  garbledFormulaMinFormulaPunctuation: 2,
   maxToolIterations: 100,
   maxAnnotationCommentChars: 4000,
   maxFullTextHighlightCommentChars: 80,
   minLocateConfidence: 0.85,
+  formulaRenderScale: 3,
+  formulaRenderMaxEdgePx: 2000,
+  formulaCropPaddingPt: 6,
+  maxFiguresPerPaper: 60,
+  transcribeBatchSize: 6,
+  paperBuildTimeoutMs: 120_000,
+  maxArxivSourceBytes: 80_000_000,
+  arxivFetchTimeoutMs: 60_000,
 };

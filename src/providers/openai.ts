@@ -351,7 +351,7 @@ export class OpenAIProvider implements Provider {
             stream: true,
             store: false,
           } as never,
-          { signal },
+          responsesRequestOptions(preset, options, signal),
         )) as unknown as AsyncIterable<unknown>;
       } catch (err) {
         yield { type: 'error', message: errMsg(err) };
@@ -482,6 +482,27 @@ export class OpenAIProvider implements Provider {
           call_id: call.call_id,
           output: result.result.output,
         } satisfies FunctionCallOutputItem);
+
+        // OpenAI's `function_call_output` is text only, so a tool that
+        // wants the model to actually SEE images (e.g. arxiv_get_figure)
+        // returns them on `result.images`. Deliver each one as an
+        // `input_image` block on a synthetic follow-up user turn — the
+        // model then handles it like any user-attached image.
+        if (result.result.images?.length) {
+          input.push({
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: `[Attached by tool ${call.name}]`,
+              },
+              ...result.result.images.map((image) => ({
+                type: 'input_image' as const,
+                image_url: image.dataUrl,
+              })),
+            ],
+          } as never);
+        }
       }
     }
 

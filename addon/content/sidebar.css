@@ -475,6 +475,7 @@
 .bubble-actions button,
 .preset-switcher button,
 .preset-empty button,
+.build-md-button,
 .composer-footer-actions button,
 .input-row button,
 .add-buttons button,
@@ -498,6 +499,7 @@
 .bubble-actions button:hover,
 .preset-switcher button:hover,
 .preset-empty button:hover,
+.build-md-button:hover,
 .composer-footer-actions button:hover,
 .input-row button:hover,
 .add-buttons button:hover,
@@ -534,6 +536,17 @@ button:disabled,
   margin-top: 2px;
   color: var(--zai-muted);
   font: 11px/1.4 var(--zai-mono);
+}
+
+.arxiv-source-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #e8f3ee;
+  color: #2f6f4f;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .task-queue-wrap {

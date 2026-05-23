@@ -1,3 +1,8 @@
+import { readArxivMainText } from './arxiv-store';
+import {
+  normalizeLatexListEnvironments,
+  normalizeLatexSourceCommands,
+} from './tex-clean';
 import type { ContextSource, ItemMetadata } from './builder';
 import { DEFAULT_CONTEXT_POLICY } from './policy';
 import type { ItemAnnotation } from './types';
@@ -30,6 +35,7 @@ interface ZoteroTag {
 
 interface ZoteroItem {
   id: number;
+  key?: string;
   getField(field: string): string;
   getCreators(): ZoteroCreator[];
   getTags(): ZoteroTag[];
@@ -78,6 +84,16 @@ export const zoteroContextSource: ContextSource = {
     const Z = getZ();
     const parent = await Z.Items.getAsync(itemID);
     if (!parent) return '';
+
+    // When a cached arXiv LaTeX source exists for this item, prefer its
+    // cleaned main.tex over the garbled PDF indexer cache below.
+    const key = parent.key;
+    const arxivText = key ? await readArxivMainText(key) : null;
+    if (arxivText) {
+      return normalizeLatexSourceCommands(
+        normalizeLatexListEnvironments(arxivText),
+      );
+    }
 
     const attachmentItems = parent.isAttachment?.()
       ? [parent]

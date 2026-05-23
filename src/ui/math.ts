@@ -87,10 +87,14 @@ export function findNextMathRegion(
     if (!opener) continue;
     const close = findClose(text, i + opener.openLen, opener.kind);
     if (close < 0) return null;
+    const rawLatex = text.slice(i + opener.openLen, close);
     return {
       start: i,
       end: close + opener.closeLen,
-      latex: text.slice(i + opener.openLen, close),
+      latex:
+        opener.kind === "latexEnvironment" && opener.env
+          ? normalizeLatexForKatex(latexEnvironmentToKatex(opener.env, rawLatex))
+          : normalizeLatexForKatex(rawLatex),
       display: opener.display,
     };
   }
@@ -101,17 +105,34 @@ type OpenerKind =
   | "displayBracket" // \[ ... \]
   | "inlineParen" // \( ... \)
   | "displayDollar" // $$ ... $$
-  | "inlineDollar"; // $ ... $
+  | "inlineDollar" // $ ... $
+  | "latexEnvironment"; // \begin{equation*} ... \end{equation*}
 
 function peekOpener(
   text: string,
   i: number,
-): { kind: OpenerKind; openLen: number; closeLen: number; display: boolean } | null {
+): {
+  kind: OpenerKind;
+  openLen: number;
+  closeLen: number;
+  display: boolean;
+  env?: string;
+} | null {
   if (text.startsWith("\\[", i)) {
     return { kind: "displayBracket", openLen: 2, closeLen: 2, display: true };
   }
   if (text.startsWith("\\(", i)) {
     return { kind: "inlineParen", openLen: 2, closeLen: 2, display: false };
+  }
+  const env = readSupportedLatexEnvironmentOpener(text, i);
+  if (env) {
+    return {
+      kind: "latexEnvironment",
+      openLen: env.openLen,
+      closeLen: env.closeLen,
+      display: true,
+      env: env.name,
+    };
   }
   // Order matters: $$ must be checked before $ so we don't open a single-$
   // region whose "body" starts with another $.
@@ -135,6 +156,12 @@ function findClose(text: string, from: number, kind: OpenerKind): number {
   if (kind === "displayBracket") return text.indexOf("\\]", from);
   if (kind === "inlineParen") return text.indexOf("\\)", from);
   if (kind === "displayDollar") return text.indexOf("$$", from);
+  if (kind === "latexEnvironment") {
+    const beginStart = text.lastIndexOf("\\begin{", from);
+    if (beginStart < 0) return -1;
+    const env = readSupportedLatexEnvironmentOpener(text, beginStart);
+    return env ? text.indexOf(env.close, from) : -1;
+  }
   // inlineDollar: scan forward, reject newlines, require non-space prefix.
   for (let j = from; j < text.length; j++) {
     const ch = text[j]!;
@@ -142,6 +169,125 @@ function findClose(text: string, from: number, kind: OpenerKind): number {
     if (ch === "$" && j > from && !isSpace(text[j - 1]!)) return j;
   }
   return -1;
+}
+
+function readSupportedLatexEnvironmentOpener(
+  text: string,
+  i: number,
+): { name: string; openLen: number; closeLen: number; close: string } | null {
+  const prefix = "\\begin{";
+  if (!text.startsWith(prefix, i)) return null;
+  const endBrace = text.indexOf("}", i + prefix.length);
+  if (endBrace < 0) return null;
+  const name = text.slice(i + prefix.length, endBrace);
+  if (!isSupportedDisplayMathEnvironment(name)) return null;
+  const close = `\\end{${name}}`;
+  return {
+    name,
+    openLen: endBrace + 1 - i,
+    closeLen: close.length,
+    close,
+  };
+}
+
+function isSupportedDisplayMathEnvironment(name: string): boolean {
+  return /^(?:equation\*?|displaymath|align\*?|gather\*?|multline\*?|aligned|gathered)$/.test(
+    name,
+  );
+}
+
+function latexEnvironmentToKatex(env: string, body: string): string {
+  const trimmed = body.trim();
+  if (/^equation\*?$/.test(env) || env === "displaymath") return trimmed;
+  if (/^align\*?$/.test(env) || env === "aligned") {
+    return `\\begin{aligned}\n${trimmed}\n\\end{aligned}`;
+  }
+  if (/^gather\*?$/.test(env) || env === "gathered") {
+    return `\\begin{gathered}\n${trimmed}\n\\end{gathered}`;
+  }
+  if (/^multline\*?$/.test(env)) {
+    return alignMultlineBody(trimmed);
+  }
+  return trimmed;
+}
+
+export function normalizeLatexForKatex(latex: string): string {
+  let out = "";
+  let cursor = 0;
+  while (cursor < latex.length) {
+    const parsed = parseKatexSourceOnlyCommandAt(latex, cursor);
+    if (!parsed) {
+      out += latex[cursor]!;
+      cursor += 1;
+      continue;
+    }
+    out += parsed.replacement;
+    cursor = parsed.end;
+  }
+  return out;
+}
+
+function parseKatexSourceOnlyCommandAt(
+  latex: string,
+  start: number,
+): { end: number; replacement: string } | null {
+  if (latex[start] !== "\\") return null;
+  const command = readLatexCommandName(latex, start);
+  if (!command) return null;
+  if (command.name === "notag" || command.name === "nonumber") {
+    return { end: command.end, replacement: "" };
+  }
+  if (command.name !== "label") return null;
+  const argStart = skipLatexSpaces(latex, command.end);
+  if (latex[argStart] !== "{") return null;
+  const arg = readBalancedLatexBraces(latex, argStart);
+  return arg ? { end: arg.end, replacement: "" } : null;
+}
+
+function readLatexCommandName(
+  latex: string,
+  start: number,
+): { name: string; end: number } | null {
+  if (latex[start] !== "\\") return null;
+  let i = start + 1;
+  while (i < latex.length && /[A-Za-z]/.test(latex[i]!)) i += 1;
+  if (i === start + 1) return null;
+  return { name: latex.slice(start + 1, i), end: i };
+}
+
+function readBalancedLatexBraces(
+  latex: string,
+  start: number,
+): { end: number } | null {
+  let depth = 0;
+  for (let i = start; i < latex.length; i++) {
+    const ch = latex[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return { end: i + 1 };
+    }
+  }
+  return null;
+}
+
+function skipLatexSpaces(latex: string, start: number): number {
+  let i = start;
+  while (i < latex.length && /\s/.test(latex[i]!)) i += 1;
+  return i;
+}
+
+function alignMultlineBody(body: string): string {
+  const rows = body
+    .split(/\\\\/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+  if (rows.length <= 1) return body;
+  return `\\begin{aligned}\n${rows.map((row) => `&${row}`).join(" \\\\\n")}\n\\end{aligned}`;
 }
 
 function isDigit(ch: string): boolean {
@@ -186,16 +332,20 @@ export function renderMathInto(
   mode: MathRenderMode = "html",
 ): void {
   const doc = target.ownerDocument!;
+  const renderRegion = {
+    ...region,
+    latex: normalizeLatexForKatex(region.latex),
+  };
 
   if (mode === "source") {
-    appendMathSource(target, region);
+    appendMathSource(target, renderRegion);
     return;
   }
 
   let html: string;
   try {
-    html = katex.renderToString(region.latex, {
-      displayMode: region.display,
+    html = katex.renderToString(renderRegion.latex, {
+      displayMode: renderRegion.display,
       throwOnError: false,
       strict: "ignore",
       trust: false,
@@ -206,13 +356,13 @@ export function renderMathInto(
     return;
   }
   const wrapper = doc.createElement(region.display ? "div" : "span");
-  wrapper.className = region.display ? "math-display" : "math-inline";
+  wrapper.className = renderRegion.display ? "math-display" : "math-inline";
   // Stash the original LaTeX so selection serializers can reconstruct
   // copy-pasteable source instead of the visually-positioned glyphs that
   // selection.toString() would otherwise emit (KaTeX HTML order ≠ visual
   // order; e.g. subscripts live in absolutely-positioned vlist spans).
-  wrapper.dataset.latex = region.latex;
-  wrapper.dataset.display = region.display ? "true" : "false";
+  wrapper.dataset.latex = renderRegion.latex;
+  wrapper.dataset.display = renderRegion.display ? "true" : "false";
   wrapper.innerHTML = html;
   target.append(wrapper);
 }

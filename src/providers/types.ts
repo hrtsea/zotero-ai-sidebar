@@ -98,6 +98,12 @@ export interface ToolExecutionResult {
   // Raw paper full text a tool wants pinned as the front block for the rest
   // of this turn's tool loop. Set by zotero_get_full_pdf.
   frontBlock?: string;
+  // Images the tool wants to attach to the conversation so the model can
+  // actually SEE them. The provider adapter delivers these as a follow-up
+  // user-turn multimodal message after the tool's function_call_output —
+  // because OpenAI/Anthropic tool results are themselves text-only. Used by
+  // multimodal tools like `arxiv_get_figure`.
+  images?: MessageImage[];
 }
 
 export interface AgentTool {

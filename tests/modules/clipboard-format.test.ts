@@ -93,6 +93,8 @@ describe('formatConversationMarkdown', () => {
         context: {
           planMode: 'full_pdf',
           fullTextChars: 44522,
+          frontBlockDebugPath:
+            '/tmp/zotero-data/zotero-ai-sidebar/prompt-front-blocks/item-3-pdf.txt',
           toolCalls: [
             {
               name: 'zotero_get_full_pdf',
@@ -134,6 +136,9 @@ describe('formatConversationMarkdown', () => {
     expect(markdown).toContain('3. Conversation History');
     expect(markdown).toContain('4. Current User Message：User question');
     expect(markdown).toContain('zotero_get_full_pdf');
+    expect(markdown).toContain(
+      '- 原文调试文件: `/tmp/zotero-data/zotero-ai-sidebar/prompt-front-blocks/item-3-pdf.txt`',
+    );
     expect(markdown).toContain('System Prompt + Front Block');
     expect(markdown).toContain('### Cache Debug');
     expect(markdown).toContain('- Provider path: openai.responses');

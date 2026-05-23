@@ -18,6 +18,7 @@ export type ContextMode =
   | "annotation_write"
   | "note_write"
   | "mindmap"
+  | "bibliography"
   | "previous_context";
 
 export type ContextPlanSource = "selected" | "model" | "fallback";
@@ -107,6 +108,16 @@ export interface MessageContext {
   fullTextChars?: number;
   fullTextTotalChars?: number;
   fullTextTruncated?: boolean;
+  bibliographyChars?: number;
+  bibliographyFiles?: string[];
+  /** Where the full text came from. "arxiv" → the cleaned LaTeX source
+   *  (formulas exact). "arxiv_toc" → just the section index (bodies are
+   *  fetched on demand via `arxiv_get_section`). Absent or "pdf" → the
+   *  PDF text layer. */
+  fullTextSource?: "arxiv" | "arxiv_toc" | "pdf";
+  /** Debug-only file path for the exact [Paper full text] front block that
+   *  was sent this turn. Saved only when the sidebar 调试 toggle is on. */
+  frontBlockDebugPath?: string;
   retainedContextCount?: number;
   retainedContextChars?: number;
   // Hidden prompt-only snapshot captured when the user turn is submitted.

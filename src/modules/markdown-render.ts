@@ -4,6 +4,14 @@ import {
   type MathRenderMode,
   type MathRegion,
 } from "../ui/math";
+import {
+  findNextCitationCommand,
+  findNextLatexTextCommand,
+  normalizeCitations,
+  normalizeLatexListEnvironments,
+  normalizeLatexSourceCommands,
+  type LatexTextCommandKind,
+} from "../context/tex-clean";
 import { parseMermaidMindmap, renderMindmapBlock } from "./mindmap-render";
 
 interface ListState {
@@ -50,7 +58,7 @@ export function renderMarkdownInto(
   const lines = normalized.split("\n");
   let paragraph: string[] = [];
   let listStack: ListState[] = [];
-  let blockquote: HTMLElement | null = null;
+  let blockquoteLines: string[] = [];
   let codeLines: string[] | null = null;
   let codeLanguage = "";
 
@@ -74,7 +82,15 @@ export function renderMarkdownInto(
   };
 
   const flushBlockquote = () => {
-    blockquote = null;
+    if (!blockquoteLines.length) return;
+    const quote = doc.createElement("blockquote");
+    appendInlineMarkdownWithLineBreaks(
+      quote,
+      blockquoteLines.join("\n"),
+      mathMode,
+    );
+    target.append(quote);
+    blockquoteLines = [];
   };
 
   const appendListItem = (item: MarkdownListItem) => {
@@ -112,13 +128,7 @@ export function renderMarkdownInto(
   const appendBlockquoteLine = (text: string) => {
     flushParagraph();
     flushList();
-    if (!blockquote) {
-      blockquote = doc.createElement("blockquote");
-      target.append(blockquote);
-    } else if (blockquote.childNodes.length) {
-      blockquote.append(doc.createElement("br"));
-    }
-    appendInlineMarkdown(blockquote, text, mathMode);
+    blockquoteLines.push(text);
   };
 
   // INVARIANT: code body uses `textContent`, NOT innerHTML — prompt
@@ -215,6 +225,7 @@ export function renderMarkdownInto(
 
   flushCode();
   flushParagraph();
+  flushBlockquote();
 }
 
 function mathRegion(latex: string): MathRegion {
@@ -275,10 +286,20 @@ function looksLikeFormulaBlock(text: string): boolean {
 
 function normalizeLatexLikeText(text: string): string {
   return text
-    .replace(/πθ/g, "\\pi_\\theta")
+    .replace(/πθ/g, "\\pi_\\theta ")
     .replace(/([A-Za-z])\u0302/g, "\\hat{$1}")
-    .replace(/[αβγδθλμστωπ]/g, (ch) => greekLatex(ch))
-    .replace(/[ΑΒΓΔΘΛΜΣΤΩΠ]/g, (ch) => greekLatex(ch));
+    .replace(/[αβγδθλμστωπ]/g, (ch) => greekToken(ch))
+    .replace(/[ΑΒΓΔΘΛΜΣΤΩΠ]/g, (ch) => greekToken(ch));
+}
+
+// A Greek glyph maps to a LaTeX token via `greekLatex`. A multi-letter
+// command (`\theta`) gets a trailing space so a following ASCII letter
+// cannot extend the command name into an undefined control sequence:
+// `fθl` becomes `f\theta l`, never `f\thetal`. The space is invisible in
+// KaTeX math-mode layout. Plain-letter mappings (Α→A) need no terminator.
+function greekToken(ch: string): string {
+  const token = greekLatex(ch);
+  return token.startsWith("\\") ? `${token} ` : token;
 }
 
 function greekLatex(ch: string): string {
@@ -309,18 +330,88 @@ function greekLatex(ch: string): string {
   return map[ch] ?? ch;
 }
 
+// A model frequently writes ONE formula across several source lines for
+// readability. Those `\n` breaks are NOT display-row breaks: `groupAlignedRows`
+// merges them back into delimiter-balanced rows first. Only when >= 2 genuine
+// rows survive do we wrap them in an `aligned` environment; a single row is
+// returned bare so `\left..\right` pairs are never split across `\\`.
 function alignMultilineFormula(lines: string[]): string | null {
   if (!lines.length) return null;
-  if (lines.length === 1) return lines[0];
+  const rows = groupAlignedRows(lines);
+  if (rows.length === 1) return rows[0];
   return [
     "\\begin{aligned}",
-    lines.map((line) => alignFormulaLine(line)).join(" \\\\\n"),
+    rows.map((row) => alignFormulaLine(row)).join(" \\\\\n"),
     "\\end{aligned}",
   ].join("\n");
 }
 
+// Walk the source lines, merging each into the current row until
+// `lineStartsNewAlignedRow` reports a genuine new equation. A `\\` row break
+// is only ever emitted between the rows returned here, so a delimiter group
+// (`\left..\right`, `\begin..\end`, `{..}`) can never straddle a row break.
+function groupAlignedRows(lines: string[]): string[] {
+  const rows: string[] = [];
+  let current = "";
+  let depth = 0;
+  for (const line of lines) {
+    if (current && lineStartsNewAlignedRow(line, depth)) {
+      rows.push(current);
+      current = line;
+      depth = latexGroupDepthDelta(line);
+    } else {
+      current = current ? `${current} ${line}` : line;
+      depth += latexGroupDepthDelta(line);
+    }
+  }
+  if (current) rows.push(current);
+  return rows;
+}
+
+// Decide whether `line` begins a new aligned display row or continues the
+// current formula. Two source layouts are visually identical but mean
+// opposite things: one formula wrapped across lines for readability (must
+// merge) versus a multi-step derivation aligned at relations (each `= ...`
+// is its own row).
+//
+// `pendingDepth` > 0 means an earlier line left a `\left` / `\begin` / `{`
+// group open. Starting a row there would split the group across a `\\`
+// break — `\left` with no matching `\right` in the row — which is invalid
+// LaTeX KaTeX rejects. So depth safety overrides the relation signal.
+function lineStartsNewAlignedRow(line: string, pendingDepth: number): boolean {
+  if (pendingDepth > 0) return false;
+  return startsWithRelation(line);
+}
+
+// Net change in open-delimiter depth contributed by one line. `\left` /
+// `\begin{..}` / `{` open a group (+1); `\right` / `\end{..}` / `}` close
+// one (-1). Escaped braces `\{` `\}` are literal glyphs and do not count.
+function latexGroupDepthDelta(line: string): number {
+  let depth = 0;
+  for (const token of line.matchAll(/\\(?:left|right|begin|end)\b/g)) {
+    depth += token[0] === "\\left" || token[0] === "\\begin" ? 1 : -1;
+  }
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\") {
+      i++; // skip the escaped char: \{ \} \\ are not grouping braces
+      continue;
+    }
+    if (line[i] === "{") depth++;
+    else if (line[i] === "}") depth--;
+  }
+  return depth;
+}
+
+const RELATION_PREFIX = /^(?:=|≤|≥|≈|∼|~|\\leq?|\\geq?|\\approx|\\sim)(?:\s|$)/;
+
+// True when `line` opens with a relation operator — the alignment point of
+// a multi-step derivation step (`= ...`, `\leq ...`).
+function startsWithRelation(line: string): boolean {
+  return RELATION_PREFIX.test(line);
+}
+
 function alignFormulaLine(line: string): string {
-  if (/^(?:=|≤|≥|≈|∼|~|\\leq?|\\geq?|\\approx|\\sim)(?:\s|$)/.test(line)) {
+  if (startsWithRelation(line)) {
     return `&${line}`;
   }
   const relation = line.match(/\s(?:=|≤|≥|≈|∼|~|\\leq?|\\geq?|\\approx|\\sim)\s/);
@@ -421,21 +512,29 @@ function appendInlineMarkdown(
     const math = findNextMathRegion(text, cursor);
     const codeStart = text.indexOf("`", cursor);
     const boldStart = text.indexOf("**", cursor);
+    const italicStart = findSingleStarEmphasisStart(text, cursor);
     const linkStart = text.indexOf("[", cursor);
+    const cite = findNextCitationCommand(text, cursor);
+    const latexText = findNextLatexTextCommand(text, cursor);
     const starts = [
       math ? math.start : -1,
+      cite ? cite.start : -1,
+      latexText ? latexText.start : -1,
       codeStart,
       boldStart,
+      italicStart,
       linkStart,
     ].filter((index) => index >= 0);
     const next = starts.length ? Math.min(...starts) : -1;
 
     if (next < 0) {
-      parent.append(doc.createTextNode(text.slice(cursor)));
+      parent.append(doc.createTextNode(normalizePlainLatex(text.slice(cursor))));
       return;
     }
     if (next > cursor) {
-      parent.append(doc.createTextNode(text.slice(cursor, next)));
+      parent.append(
+        doc.createTextNode(normalizePlainLatex(text.slice(cursor, next))),
+      );
     }
 
     if (math && next === math.start) {
@@ -444,10 +543,24 @@ function appendInlineMarkdown(
       continue;
     }
 
+    if (cite && next === cite.start) {
+      parent.append(doc.createTextNode(cite.replacement));
+      cursor = cite.end;
+      continue;
+    }
+
+    if (latexText && next === latexText.start) {
+      const wrapper = latexTextWrapperElement(parent, latexText.kind);
+      appendInlineMarkdown(wrapper, latexText.content, mathMode);
+      parent.append(wrapper);
+      cursor = latexText.end;
+      continue;
+    }
+
     if (next === codeStart) {
       const end = text.indexOf("`", next + 1);
       if (end < 0) {
-        parent.append(doc.createTextNode(text.slice(next)));
+        parent.append(doc.createTextNode(normalizePlainLatex(text.slice(next))));
         return;
       }
       const codeContent = text.slice(next + 1, end);
@@ -475,7 +588,7 @@ function appendInlineMarkdown(
     if (next === boldStart) {
       const end = text.indexOf("**", next + 2);
       if (end < 0) {
-        parent.append(doc.createTextNode(text.slice(next)));
+        parent.append(doc.createTextNode(normalizePlainLatex(text.slice(next))));
         return;
       }
       const strong = doc.createElement("strong");
@@ -485,9 +598,22 @@ function appendInlineMarkdown(
       continue;
     }
 
+    if (next === italicStart) {
+      const end = findSingleStarEmphasisEnd(text, next + 1);
+      if (end < 0) {
+        parent.append(doc.createTextNode(normalizePlainLatex(text.slice(next))));
+        return;
+      }
+      const em = doc.createElement("em");
+      appendInlineMarkdown(em, text.slice(next + 1, end), mathMode);
+      parent.append(em);
+      cursor = end + 1;
+      continue;
+    }
+
     const link = parseMarkdownLink(text, next);
     if (!link) {
-      parent.append(doc.createTextNode(text[next]));
+      parent.append(doc.createTextNode(normalizePlainLatex(text[next])));
       cursor = next + 1;
       continue;
     }
@@ -502,6 +628,86 @@ function appendInlineMarkdown(
     parent.append(anchor);
     cursor = link.end;
   }
+}
+
+function normalizePlainLatex(text: string): string {
+  return normalizeLatexSourceCommands(
+    normalizeCitations(normalizeLatexListEnvironments(text)),
+  );
+}
+
+function latexTextWrapperElement(
+  parent: HTMLElement,
+  kind: LatexTextCommandKind,
+): HTMLElement {
+  const doc = parent.ownerDocument!;
+  if (kind === "emphasis") return doc.createElement("em");
+  if (kind === "strong") return doc.createElement("strong");
+  if (kind === "code") return doc.createElement("code");
+  if (kind === "underline") return doc.createElement("u");
+  return doc.createElement("span");
+}
+
+function findSingleStarEmphasisStart(text: string, cursor: number): number {
+  for (let i = cursor; i < text.length; i++) {
+    if (text[i] !== "*") continue;
+    if (text[i - 1] === "*" || text[i + 1] === "*") continue;
+    if (!text[i + 1] || /\s/.test(text[i + 1])) continue;
+    const prev = text[i - 1];
+    if (prev && /[A-Za-z0-9_]/.test(prev)) continue;
+    if (findSingleStarEmphasisEnd(text, i + 1) >= 0) return i;
+  }
+  return -1;
+}
+
+function findSingleStarEmphasisEnd(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "\n") return -1;
+    if (text[i] !== "*") continue;
+    if (text[i - 1] === "*" || text[i + 1] === "*") continue;
+    if (i === from || /\s/.test(text[i - 1])) continue;
+    const next = text[i + 1];
+    if (next && /[A-Za-z0-9_]/.test(next)) continue;
+    return i;
+  }
+  return -1;
+}
+
+function appendInlineMarkdownWithLineBreaks(
+  parent: HTMLElement,
+  text: string,
+  mathMode: MathRenderMode,
+): void {
+  text = normalizeLatexListEnvironments(text);
+  let cursor = 0;
+  while (cursor < text.length) {
+    const math = findNextMathRegion(text, cursor);
+    if (!math) {
+      appendInlineMarkdownTextRun(parent, text.slice(cursor), mathMode);
+      return;
+    }
+    appendInlineMarkdownTextRun(
+      parent,
+      text.slice(cursor, math.start),
+      mathMode,
+    );
+    renderMathInto(parent, math, mathMode);
+    cursor = math.end;
+  }
+}
+
+function appendInlineMarkdownTextRun(
+  parent: HTMLElement,
+  text: string,
+  mathMode: MathRenderMode,
+): void {
+  if (!text) return;
+  const doc = parent.ownerDocument!;
+  const lines = text.split("\n");
+  lines.forEach((line, index) => {
+    if (index > 0) parent.append(doc.createElement("br"));
+    if (line) appendInlineMarkdown(parent, line, mathMode);
+  });
 }
 
 function markdownHeadingLevel(line: string): number {

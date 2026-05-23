@@ -1,4 +1,5 @@
 import { splitSentences } from "../translate/sentence-splitter";
+import { DEFAULT_CONTEXT_POLICY } from "./policy";
 
 // Locator that maps a verbatim text passage to PDF coordinates so we can
 // write a Zotero highlight at the correct rectangle.
@@ -78,6 +79,11 @@ export interface PdfLocator {
     needle: string,
     opts?: { minConfidence?: number; pageIndex?: number; exactOnly?: boolean },
   ): Promise<LocateResult | null>;
+  renderRegion(
+    pageIndex: number,
+    rects: PdfRect[],
+    onTrace?: (msg: string) => void,
+  ): Promise<Uint8Array | null>;
   dispose(): void;
 }
 
@@ -386,6 +392,123 @@ export async function createPdfLocator(reader: unknown): Promise<PdfLocator> {
         await cumulativeOffset(bestFuzzy.page.pageIndex),
       );
     },
+    // Renders a cropped PNG of one PDF region from the live pdf.js viewer.
+    // WHY a separate render path (not the text-source object graph above):
+    // text extraction needs a `pdfDocument`, but rendering needs the real
+    // pdf.js `PDFPageProxy` reachable only via `pdfViewer.getPageView(...)`.
+    // A live probe confirmed `pdfDocument.getPage()` returns a non-renderable
+    // object — see `extractPdfViewer`. Any failure returns null so callers
+    // (the formula-repair pipeline) degrade gracefully.
+    async renderRegion(pageIndex, rects, onTrace) {
+      try {
+        if (!rects.length) {
+          onTrace?.("no rects");
+          return null;
+        }
+        const found = extractPdfViewer(reader);
+        if (!found) {
+          onTrace?.("no pdfViewer");
+          return null;
+        }
+        const pv = found.viewer.getPageView?.(pageIndex);
+        if (!pv) {
+          onTrace?.("no pageView");
+          return null;
+        }
+
+        // Crop the canvas pdf.js ALREADY rendered, instead of calling
+        // `pdfPage.render()` ourselves. WHY: pdf.js runs in the reader's
+        // content compartment and cannot read parameter objects built in the
+        // plugin's privileged compartment — `getViewport({scale})` and
+        // `render({canvasContext})` both receive `undefined` across the Xray
+        // boundary. Reading the canvas pdf.js itself drew sidesteps that.
+        if ((!pv.canvas || !pv.canvas.width) && typeof pv.draw === "function") {
+          onTrace?.("page not drawn yet — calling pv.draw()");
+          try {
+            await pv.draw();
+          } catch (e) {
+            onTrace?.(`pv.draw threw: ${String(e)}`);
+          }
+        }
+        const srcCanvas = pv.canvas;
+        if (!srcCanvas || !srcCanvas.width || !srcCanvas.height) {
+          onTrace?.("no rendered page canvas");
+          return null;
+        }
+        const cw: number = srcCanvas.width;
+        const ch: number = srcCanvas.height;
+        onTrace?.(`page canvas ${cw}x${ch}`);
+
+        // PDF user-space page box — maps rects (y-up) onto canvas px (y-down).
+        const page = await bundleFor(pageIndex);
+        const viewBox = page?.viewBox;
+        const pageW = viewBox ? viewBox[2] - viewBox[0] : 0;
+        const pageH = viewBox ? viewBox[3] - viewBox[1] : 0;
+        if (!viewBox || pageW <= 0 || pageH <= 0) {
+          onTrace?.("no usable page viewBox");
+          return null;
+        }
+
+        const pad = DEFAULT_CONTEXT_POLICY.formulaCropPaddingPt;
+        let bx0 = Infinity;
+        let by0 = Infinity;
+        let bx1 = -Infinity;
+        let by1 = -Infinity;
+        for (const rect of rects) {
+          const left = ((rect[0] - pad - viewBox[0]) / pageW) * cw;
+          const right = ((rect[2] + pad - viewBox[0]) / pageW) * cw;
+          const top = ((viewBox[3] - (rect[3] + pad)) / pageH) * ch;
+          const bottom = ((viewBox[3] - (rect[1] - pad)) / pageH) * ch;
+          bx0 = Math.min(bx0, left);
+          bx1 = Math.max(bx1, right);
+          by0 = Math.min(by0, top);
+          by1 = Math.max(by1, bottom);
+        }
+        const x0 = Math.max(0, Math.min(cw, bx0));
+        const y0 = Math.max(0, Math.min(ch, by0));
+        const x1 = Math.max(0, Math.min(cw, bx1));
+        const y1 = Math.max(0, Math.min(ch, by1));
+        const w = Math.max(1, Math.round(x1 - x0));
+        const h = Math.max(1, Math.round(y1 - y0));
+        onTrace?.(`crop ${w}x${h} at ${Math.round(x0)},${Math.round(y0)}`);
+
+        // Crop canvas lives in the plugin's privileged document so `toBlob`
+        // runs fully on this side; `drawImage` reading the content-side page
+        // canvas is a permitted cross-compartment read (probe-confirmed).
+        const chromeDoc: Document | undefined = (
+          globalThis as { Zotero?: { getMainWindow?: () => { document?: Document } | null } }
+        ).Zotero?.getMainWindow?.()?.document;
+        if (!chromeDoc) {
+          onTrace?.("no chrome document");
+          return null;
+        }
+        const crop: any = chromeDoc.createElementNS(
+          "http://www.w3.org/1999/xhtml",
+          "canvas",
+        );
+        crop.width = w;
+        crop.height = h;
+        const cropCtx = crop.getContext("2d");
+        if (!cropCtx) {
+          onTrace?.("no crop 2d context");
+          return null;
+        }
+        cropCtx.drawImage(srcCanvas, x0, y0, w, h, 0, 0, w, h);
+
+        const blob: Blob = await new Promise((res, rej) =>
+          crop.toBlob(
+            (b: Blob | null) =>
+              b ? res(b) : rej(new Error("toBlob failed")),
+            "image/png",
+          ),
+        );
+        onTrace?.(`blob ${blob.size}B`);
+        return new Uint8Array(await blob.arrayBuffer());
+      } catch (e) {
+        onTrace?.(`threw: ${String(e)}`);
+        return null;
+      }
+    },
     dispose() {
       bundles.clear();
       pageLengths.clear();
@@ -474,6 +597,29 @@ function pdfViewerApplications(win: unknown): any[] {
     w?.contentWindow?.PDFViewerApplication,
     w?.contentWindow?.wrappedJSObject?.PDFViewerApplication,
   ].filter(Boolean);
+}
+
+// Walks the same Reader iframe windows as `extractPdfSource`, but resolves to
+// the live pdf.js `PDFViewer` instead of a text source. WHY we also return the
+// iframe `win`: rendering creates a `<canvas>`, and the canvas must live in the
+// same document/compartment as the pdf.js objects driving `render(...)`.
+function extractPdfViewer(
+  reader: unknown,
+): { viewer: any; win: any } | null {
+  const r = reader as any;
+  const windows = [
+    r?._internalReader?._primaryView?._iframeWindow,
+    r?._internalReader?._secondaryView?._iframeWindow,
+    r?._internalReader?._iframeWindow,
+    r?._iframeWindow,
+  ].filter(Boolean);
+  for (const win of windows) {
+    for (const app of pdfViewerApplications(win)) {
+      const viewer = app?.pdfViewer;
+      if (viewer) return { viewer, win };
+    }
+  }
+  return null;
 }
 
 function firstPdfSource(

@@ -2,7 +2,11 @@
 // stub in src/ui/math.ts is implemented. Iterate against `npm test -- math`.
 
 import { describe, expect, it } from "vitest";
-import { findNextMathRegion, renderMathInto } from "../../src/ui/math";
+import {
+  findNextMathRegion,
+  normalizeLatexForKatex,
+  renderMathInto,
+} from "../../src/ui/math";
 
 describe("findNextMathRegion — display delimiters", () => {
   it("matches \\[ ... \\]", () => {
@@ -37,6 +41,42 @@ describe("findNextMathRegion — display delimiters", () => {
 
   it("returns null for unclosed $$ (streaming-safe)", () => {
     expect(findNextMathRegion("a $$x = 1", 0)).toBeNull();
+  });
+
+  it("matches LaTeX equation environments as display math", () => {
+    const region = findNextMathRegion(
+      "a \\begin{equation*}\nx = 1\n\\end{equation*} b",
+      0,
+    );
+
+    expect(region).not.toBeNull();
+    expect(region?.start).toBe(2);
+    expect(region?.latex).toBe("x = 1");
+    expect(region?.display).toBe(true);
+  });
+
+  it("normalizes align environments to KaTeX aligned display math", () => {
+    const region = findNextMathRegion(
+      "\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}",
+      0,
+    );
+
+    expect(region).not.toBeNull();
+    expect(region?.latex).toContain("\\begin{aligned}");
+    expect(region?.latex).toContain("a &= b");
+    expect(region?.display).toBe(true);
+  });
+
+  it("strips source-only labels and numbering controls from math environments", () => {
+    const region = findNextMathRegion(
+      "\\begin{align}\na &= b \\notag \\\\\nc &= d, \\label{eq:demo}\n\\end{align}",
+      0,
+    );
+
+    expect(region).not.toBeNull();
+    expect(region?.latex).not.toContain("\\notag");
+    expect(region?.latex).not.toContain("\\label");
+    expect(region?.latex).not.toContain("eq:demo");
   });
 });
 
@@ -145,5 +185,13 @@ describe("renderMathInto — source mode", () => {
     expect(math.tagName).toBe("SPAN");
     expect(math.className).toBe("math");
     expect(math.textContent).toBe("$x^2$");
+  });
+});
+
+describe("normalizeLatexForKatex", () => {
+  it("removes source-only metadata before KaTeX rendering", () => {
+    expect(
+      normalizeLatexForKatex("x &= y \\nonumber \\\\ z &= w, \\label{eq:x}"),
+    ).toBe("x &= y  \\\\ z &= w, ");
   });
 });

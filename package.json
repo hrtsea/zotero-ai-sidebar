@@ -36,6 +36,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@dagrejs/dagre": "^3.0.0",
+    "fflate": "^0.8.3",
     "katex": "^0.16.45",
     "openai": "^6.35.0",
     "react": "^19.2.5",
