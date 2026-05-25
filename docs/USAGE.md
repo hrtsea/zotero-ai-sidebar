@@ -16,13 +16,14 @@ This document targets **end users** and is split in two halves:
 
 - [1. 5-Minute Quick Start](#1-5-minute-quick-start)
 - [2. Common Workflows](#2-common-workflows)
-  - [2.1 Ask the AI to interpret a section](#21-ask-the-ai-to-interpret-a-section)
+  - [2.1 Ask the AI about a section or selection](#21-ask-the-ai-about-a-section-or-selection)
   - [2.2 Translate a PDF sentence-by-sentence (Translate mode)](#22-translate-a-pdf-sentence-by-sentence-translate-mode)
   - [2.3 Let the AI add highlights / annotations to the PDF](#23-let-the-ai-add-highlights--annotations-to-the-pdf)
   - [2.4 Use slash commands for arXiv or web search](#24-use-slash-commands-for-arxiv-or-web-search)
   - [2.5 Distill answers into a paper note](#25-distill-answers-into-a-paper-note)
-  - [2.6 Sync chats and config across devices (WebDAV)](#26-sync-chats-and-config-across-devices-webdav)
-  - [2.7 Back up and migrate config](#27-back-up-and-migrate-config)
+  - [2.6 Read arXiv papers with exact equations and figures](#26-read-arxiv-papers-with-exact-equations-and-figures)
+  - [2.7 Sync chats and config across devices (WebDAV)](#27-sync-chats-and-config-across-devices-webdav)
+  - [2.8 Back up and migrate config](#28-back-up-and-migrate-config)
 - [3. Reference Manual](#3-reference-manual)
   - [3.1 Model presets](#31-model-presets)
   - [3.2 Sidebar UI map](#32-sidebar-ui-map)
@@ -36,6 +37,8 @@ This document targets **end users** and is split in two halves:
   - [3.10 WebDAV cloud sync](#310-webdav-cloud-sync)
   - [3.11 Config export / import](#311-config-export--import)
   - [3.12 Chat history](#312-chat-history)
+  - [3.13 arXiv LaTeX source mode](#313-arxiv-latex-source-mode)
+  - [3.14 PDF formula repair cache](#314-pdf-formula-repair-cache)
 - [Troubleshooting](#troubleshooting)
 - [Related docs](#related-docs)
 
@@ -98,13 +101,22 @@ That closes the loop: **read paper → AI interprets → permanent record in Zot
 
 ## 2. Common Workflows
 
-### 2.1 Ask the AI to interpret a section
+### 2.1 Ask the AI about a section or selection
 
-The natural pattern: **select text in the Reader with your mouse**. A *selection chip* (with a character-count preview) appears above the composer. Now ask your question normally.
+Two ways to scope what the AI looks at:
 
-That turn the model prefers `zotero_get_current_pdf_selection` / `zotero_get_reader_pdf_text` over reading the whole PDF — fewer tokens, more focused answer.
+**By default, the whole paper is in context** — the `📄 原文` toggle next to the composer is on. Ask anything, the model sees the full paper. Best for "summarize", "what's the contribution", "compare with related work".
 
-To drop the selection, click the × on the chip. The chip never auto-clears, and **the sidebar does not jiggle as the PDF selection changes** — that flicker is an explicit anti-goal of the UI.
+**To focus on a passage**: select text in the Reader. A *selection chip* (with a character-count preview) appears above the composer. Ask your question — the selection is added on top of the pinned paper context, so the model still knows the surrounding context but focuses on what you highlighted.
+
+**To use selection only (no full paper)**: click `📄 原文` to turn pinning off (a one-time dialog explains the trade-off). The toggle is remembered per paper.
+
+**One-turn override**: flip `+ 本轮原文` above the composer to escalate just one question to the full paper, without changing the global setting.
+
+**Watch out for:**
+- Disabling `原文` saves tokens but can leave the model without crucial context for whole-paper questions ("what does this paper conclude" with `原文` off may fail).
+- The selection chip never auto-clears — click × on the chip when you're done with it.
+- The sidebar doesn't re-render when the PDF selection changes; the chip is the only visible signal.
 
 ### 2.2 Translate a PDF sentence-by-sentence (Translate mode)
 
@@ -142,12 +154,12 @@ Color mapping: see [§3.9](#39-pdf-highlight-color-rubric).
 
 Type `/` in the composer to surface command suggestions. Two are built-in:
 
-| Command | Usage | Behavior |
+| Command | Usage | What it does |
 |---|---|---|
-| `/arxiv-search` | `/arxiv-search <query or arXiv URL>` | Model uses `paper_search_arxiv`, optionally followed by `paper_fetch_arxiv_fulltext` |
-| `/web-search` | `/web-search <query>` | Model calls the configured built-in web-search tool (must be enabled provider-side) |
+| `/arxiv-search` | `/arxiv-search <query or arXiv URL>` | Tells the model the user explicitly wants arXiv search or paper inspection — model picks the best tool (general search, or the precise arXiv-source tools if the current item has a cached LaTeX source) |
+| `/web-search` | `/web-search <query>` | Calls the built-in web-search tool (provider-side feature; must be enabled in settings) |
 
-Slash commands **do not run business logic locally**. They only inject a prompt fragment ("the user has explicitly chosen this action") and let the model decide which tool calls to make. This is the Codex-style invariant: **no local keyword routing**.
+Slash commands don't run logic locally — they just inject "the user explicitly chose this" into the prompt and let the model decide how to act.
 
 ### 2.5 Distill answers into a paper note
 
@@ -157,7 +169,27 @@ The note panel is designed as a **work area independent from the chat**: opening
 - **AI write** — invoke `zotero_append_to_note`. The tool finds (or creates) the paper's child note and appends.
 - **Hybrid** — let the AI summarize, then hand-edit. Same loop as code review.
 
-### 2.6 Sync chats and config across devices (WebDAV)
+### 2.6 Read arXiv papers with exact equations and figures
+
+For arXiv papers, the plugin automatically downloads the LaTeX source and reads from it instead of the PDF text layer. Equations arrive at the model verbatim instead of as garbled `f l θ`-style fragments from the PDF.
+
+**You'll know it's active when** a `LaTeX 源` badge appears next to the paper title in the sidebar.
+
+**How to use it:**
+
+- **Ask about an equation by number** — "What does Equation (3) say?" / "Walk me through Eq. 5." The plugin pulls the exact LaTeX of that equation.
+- **Ask about a figure by number** — "Walk me through Figure 2." The figure image appears inline in the chat, and follow-up questions ("what's in the bottom-right of that figure?") still have the image available to vision-capable models.
+- **Ask about a table by number** — "Summarize Table 1." The plugin pulls the table source.
+- **Ask about a section by name** — "Explain the Method section." The plugin fetches just that section instead of the whole paper.
+
+**Watch out for:**
+- The first question on a new arXiv paper takes a few extra seconds — the source is being downloaded and cached.
+- Use **numbers** ("Figure 2", "Eq. 3", "Table 1"), not descriptions ("the figure with the loss curves"). The lookup is by number/label.
+- Very old papers or papers where the author chose to withhold source will silently fall back to the PDF flow — your prompt doesn't have to change.
+
+See [§3.13](#313-arxiv-latex-source-mode) for details on what changes under the hood.
+
+### 2.7 Sync chats and config across devices (WebDAV)
 
 Use case: keep chat history, prompt library, and UI settings consistent between desktop and laptop.
 
@@ -175,7 +207,7 @@ What `state.json` contains:
 
 `★ Three-layer split` — (1) zotero.org for library metadata, (2) Zotero File Sync for PDFs over WebDAV, (3) this plugin for `state.json` over WebDAV. The three layers are decoupled; killing one does not break the others.
 
-### 2.7 Back up and migrate config
+### 2.8 Back up and migrate config
 
 If you don't want WebDAV, plain export/import works:
 
@@ -212,60 +244,79 @@ Each preset maintains its own model list — same base URL, different model ids,
 Top to bottom:
 
 ```
-┌──────────────────────────────────┐
-│  [Settings] [Translate] [Screenshot] ...│  ← toolbar
-├──────────────────────────────────┤
-│  AI: ...                          │  ← message stream
-│  ┌─ Thinking (collapsed) ─┐      │
-│  └────────────────────────┘      │
-│  ┌─ Tool trace (collapsed) ─┐    │
-│  └──────────────────────────┘    │
-│  You: ...                         │
-├──────────────────────────────────┤
-│  [📎 Selection: "..." × ]        │  ← composer chip (PDF selection / images)
-│  ┌────────────────────────┐     │
-│  │  /                       │     │  ← composer; `/` triggers slash menu
-│  │  ...                     │     │
-│  └────────────────────────┘     │
-│   Preset switcher  [Send]        │  ← footer
-└──────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  [Settings] [Translate] [Screenshot] [Debug]  │  ← toolbar
+├───────────────────────────────────────────────┤
+│  Paper title  [LaTeX 源]                      │  ← metadata (badge on arXiv items)
+├───────────────────────────────────────────────┤
+│  AI: ...                                       │  ← message stream
+│  ┌─ Thinking (collapsed) ─┐                    │
+│  └────────────────────────┘                    │
+│  ┌─ Tool trace (collapsed) ─┐                  │
+│  └──────────────────────────┘                  │
+│  You: ...                                      │
+├───────────────────────────────────────────────┤
+│  [📎 Selection: "..." × ]                     │  ← chip (selection / images)
+│  [📄 原文]  [+ 本轮原文]  [🌐 联网]            │  ← context toggles
+│  ┌─────────────────────────┐                   │
+│  │  / ...                   │                   │  ← composer
+│  └─────────────────────────┘                   │
+│   Preset switcher                       [Send] │  ← footer
+└───────────────────────────────────────────────┘
 ```
 
-Notable behaviors:
+Things to know:
 
-- **Streaming auto-scroll** sticks to the bottom only if you were already near it. Manually scrolled up? Your scroll position is preserved as new chunks arrive.
+- **`📄 原文` toggle** (on by default): pins the paper's text into every turn so the model doesn't have to re-fetch it. Turn it off for selection-only questions; click `+ 本轮原文` instead for a one-time full-paper send.
+- **`LaTeX 源` badge** appears next to the title when this paper is being read from its arXiv LaTeX source instead of the PDF text. Equations come out exact. See [§3.13](#313-arxiv-latex-source-mode).
+- **`Debug` toggle** dumps the exact `[Paper full text]` block sent each turn to a file, so you can verify what the model actually saw. The path appears in the Debug-mode Markdown export footer.
+- **Tables in responses** — when the model produces a Markdown pipe table, it renders as a real table in the chat.
+- **Recall previous prompts** with `↑` / `↓` in the composer when it's empty.
+- **Streaming auto-scroll** sticks to the bottom only if you were already near it; manually scrolled up means your position is preserved.
 - **Composer drafts** survive sidebar re-renders, streaming, tool calls, Reader selection changes, and preset switches.
-- **Copy conversation** has two modes: **Clean** (paper intro + dialogue only — for sharing) and **Debug** (includes thinking, context traces, PDF snippets — for bug reports or model-decision audits).
+- **Copy conversation** has two modes: **Clean** (intro + dialogue, for sharing) and **Debug** (full thinking + traces + snippets, for bug reports).
 
 ### 3.3 Agent tools
 
-Authoritative names live in `src/context/agent-tools.ts`. Categories:
+Useful when reading the tool trace — these are the names you'll see.
 
-**Read tools (always enabled):**
+**Reading the paper (always available):**
 
-| Tool | Purpose |
+| Tool | What it does |
 |---|---|
-| `zotero_get_current_item` | Title, authors, year, abstract, tags, collections of the bound item |
-| `zotero_get_annotations` | All existing annotations on the current paper |
-| `zotero_search_pdf` | Keyword search across the PDF, returns matching passages |
+| `zotero_get_current_item` | Title, authors, year, abstract, tags |
+| `zotero_get_annotations` | Existing highlights/notes on this paper |
+| `zotero_search_pdf` | Keyword search across the PDF |
 | `zotero_read_pdf_range` | Read a specific page or paragraph range |
-| `zotero_get_full_pdf` | Pull the full PDF text in one call (subject to budget in `policy.ts`) |
-| `zotero_get_current_pdf_selection` | Whatever the user has currently selected in the Reader |
-| `zotero_get_reader_pdf_text` | Text of the current page / visible region |
-| `chat_get_previous_context` | Lets the model re-inspect earlier context without polluting main history |
-| `paper_search_arxiv` | arXiv search |
-| `paper_fetch_arxiv_fulltext` | arXiv full text |
+| `zotero_get_full_pdf` | Pull the full PDF text in one call |
+| `zotero_get_current_pdf_selection` | The text you have selected in the Reader |
+| `zotero_get_reader_pdf_text` | Text of the current page |
+| `chat_get_previous_context` | Re-inspect earlier context without spending tokens replaying it |
+| `paper_search_arxiv` | Search arXiv (any paper, not just the current one) |
+| `paper_fetch_arxiv_fulltext` | Fetch full text of an arXiv paper by query/URL |
+| `draw_article_mindmap` | Generate a mindmap of the paper structure |
 
-**Write tools (blocked by default, gated by approval / YOLO):**
+**Reading arXiv source** (only visible to the model when the current paper has a cached LaTeX source — see [§3.13](#313-arxiv-latex-source-mode)):
 
-| Tool | Purpose |
+| Tool | What it does |
 |---|---|
-| `zotero_add_annotation_to_selection` | Highlight current selection with color + comment |
-| `zotero_add_text_annotation_to_selection` | Text-only annotation at the selection |
-| `zotero_annotate_passage` | Batch-pick sentences across a passage and highlight |
-| `zotero_append_to_note` | Append content to the paper's child note (creates one if missing) |
+| `arxiv_list_sections` | List the section index (titles, sizes) — cheap way to scout before fetching |
+| `arxiv_get_section` | Fetch one section's body, by name or number |
+| `arxiv_get_equation` | Fetch a numbered equation as exact LaTeX |
+| `arxiv_get_figure` | Fetch a figure by number/label — image is attached as multimodal context |
+| `arxiv_get_table` | Fetch a table by number/label, cleaned from the source |
+| `arxiv_get_bibliography` | Fetch the bibliography |
 
-**Safety semantics**: every write call is visible in the trace. YOLO mode is per-preset, not global.
+**Writing to Zotero (blocked by default — needs approval or YOLO mode in the preset):**
+
+| Tool | What it does |
+|---|---|
+| `zotero_add_annotation_to_selection` | Highlight current selection in a chosen color, with optional comment |
+| `zotero_add_text_annotation_to_selection` | Text-only annotation at the selection |
+| `zotero_annotate_passage` | Batch-highlight sentences across a passage |
+| `zotero_append_to_note` | Append content to this paper's child note (creates one if missing) |
+
+Every write call shows up in the tool trace so you can audit (or undo via Zotero's normal annotation list).
 
 ### 3.4 Slash commands
 
@@ -313,6 +364,8 @@ The toolbar **Screenshot** button captures a region of the PDF / Reader and atta
 
 On send, images are passed as **real multimodal inputs** to the provider (not just shown locally). The model must support vision (Claude 3+, GPT-4o/5, etc.).
 
+**arXiv figures count too** — when the model fetches a figure via `arxiv_get_figure`, the image appears in the chat and stays available to the vision model for follow-up questions ("what's in the top-right of that figure?").
+
 ### 3.9 PDF highlight color rubric
 
 Zotero's six default annotation colors are exposed by hex code. This plugin maps each color to a semantic label (background / problem / method / dataset / results / …) and injects the rubric as a natural-language prompt so the model can pick a color when calling `zotero_add_annotation_to_selection`.
@@ -351,6 +404,36 @@ Right tool when you want to *carry config to a new machine but leave conversatio
 - **Copy as Markdown** has two modes:
   - **Clean** — paper intro + dialogue. For sharing or blog posts.
   - **Debug** — full thinking, context traces, PDF snippets, error logs. For bug reports or auditing model decisions.
+- **`Debug` toggle in the toolbar** also dumps the exact `[Paper full text]` block each turn sends to the model into a file under Zotero's data dir. Useful when you suspect the model didn't see what you think it saw. The file path appears at the end of the Debug Markdown export.
+
+### 3.13 arXiv LaTeX source mode
+
+For arXiv papers, the plugin downloads the source `.tar.gz`, cleans the TeX, and lets the model read from it instead of the PDF text layer.
+
+**You're in this mode when** a `LaTeX 源` badge appears next to the paper title.
+
+**Why it matters:**
+- Equations arrive as exact LaTeX, not as `f l θ`-style garble from the PDF text layer.
+- Numbered references resolve cleanly — "Eq. (3)", "Figure 2", "Table 1" all map to the right object.
+- The model gets the section index up front and pulls bodies on demand, so long papers don't blow the token budget.
+
+**Fallback:** if the paper has no arXiv ID, the source download fails, or the author withheld source, the plugin silently falls back to the PDF flow — same `zotero_*` tools as before.
+
+**Cache:** the cleaned source lives under Zotero's data dir, keyed per paper. Survives Zotero restarts.
+
+### 3.14 PDF formula repair cache
+
+For non-arXiv PDFs where math is mangled by the PDF text layer (typical for double-column papers), the plugin builds a per-paper repaired copy:
+
+1. On the first turn that reads PDF text, fragmented formula regions are detected.
+2. Each region is rendered, cropped from the PDF, and transcribed back to LaTeX by a vision pass.
+3. The repaired markdown is saved per paper and reused on every later turn.
+
+**What you'll notice:**
+- The **first** question on a math-heavy paper takes longer (visible in the trace as a transcription step). Subsequent questions are fast.
+- The cache costs vision-model calls only once per paper.
+
+Use the `Debug` toggle to see exactly what repaired text the model received.
 
 ---
 
@@ -395,6 +478,20 @@ That's an explicit anti-goal of the design. If you see it, suspect a stale exten
 ### "Copy button drops thinking / tool calls"
 
 Switch to **Debug** copy mode. **Clean** mode intentionally strips them — it is the share-friendly variant.
+
+### "The model keeps reading the whole paper but I only want it to look at my selection"
+
+That's the `📄 原文` toggle next to the composer (on by default). Click it to turn off — the next turn will rely only on the selection plus what the model fetches via tools. The setting is per-paper.
+
+### "First question on an arXiv or math-heavy paper is slow"
+
+Expected behavior:
+- **arXiv paper**: the source `.tar.gz` is downloading on the first relevant turn; subsequent questions reuse the cache.
+- **Non-arXiv math paper**: the PDF formula repair pass is running (rendering crops + vision transcription). Only happens once per paper.
+
+### "On an arXiv paper, the model can't find Figure 2 / Equation 3"
+
+Reference figures, equations, and tables **by number** ("Figure 2", "Eq. 3", "Table 1"), not by content description. The arXiv tools look up by number/label.
 
 ---
 
