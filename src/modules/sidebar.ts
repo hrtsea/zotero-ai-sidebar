@@ -4851,6 +4851,11 @@ async function saveReadingRouteAndReplaceChatMessage(
   routeMarkdown: string,
 ): Promise<void> {
   const markdown = routeMarkdown.trim();
+  debugZai("reading-route.chat-save:start", {
+    itemID,
+    markdown: textDebugInfo(markdown),
+    markdownChars: readingRouteStringDiagnostics(markdown),
+  });
   try {
     const result = await saveReadingRouteToDedicatedNote(doc, itemID, markdown);
     try {
@@ -4874,6 +4879,12 @@ async function saveReadingRouteAndReplaceChatMessage(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    debugZai("reading-route.chat-save:failed", {
+      itemID,
+      error: readingRouteErrorDebugInfo(err),
+      markdown: textDebugInfo(markdown),
+      markdownChars: readingRouteStringDiagnostics(markdown),
+    });
     assistant.content = [
       "阅读路线已生成，但保存到「AI 阅读路线」笔记失败。",
       "",
@@ -8687,22 +8698,102 @@ async function saveReadingRouteToDedicatedNote(
   itemID: number | null,
   markdown: string,
 ): Promise<{ note: Zotero.Item; created: boolean }> {
-  const target = await resolveReadingRouteNote(itemID);
-  const existing = target.note.getNote?.() || "";
-  const jumpLinks = await readingRoutePdfJumpLinks(doc, itemID, markdown);
-  const quoteLinks = await readingRoutePdfQuoteJumpLinks(doc, itemID, markdown);
-  target.note.setNote(
-    readingRouteNoteHTML(
+  const startedAt = Date.now();
+  let stage = "resolve-note";
+  debugZai("reading-route.save:start", {
+    itemID,
+    markdown: textDebugInfo(markdown),
+    markdownChars: readingRouteStringDiagnostics(markdown),
+  });
+  try {
+    const target = await resolveReadingRouteNote(itemID);
+    debugZai("reading-route.save:note", {
+      itemID,
+      noteID: target.note.id,
+      created: target.created,
+      noteTitle: noteTitle(target.note),
+    });
+
+    stage = "read-existing-note";
+    const existing = target.note.getNote?.() || "";
+    debugZai("reading-route.save:existing", {
+      noteID: target.note.id,
+      existing: htmlStringDebugInfo(existing),
+      existingChars: readingRouteStringDiagnostics(existing),
+    });
+
+    stage = "pdf-reference-links";
+    const jumpLinks = await readingRoutePdfJumpLinks(doc, itemID, markdown);
+    debugZai("reading-route.save:reference-links", {
+      count: jumpLinks.size,
+      keys: Array.from(jumpLinks.keys()).slice(0, 12),
+    });
+
+    stage = "pdf-quote-links";
+    const quoteLinks = await readingRoutePdfQuoteJumpLinks(
+      doc,
+      itemID,
+      markdown,
+    );
+    debugZai("reading-route.save:quote-links", {
+      count: quoteLinks.size,
+      keys: Array.from(quoteLinks.keys()).slice(0, 8),
+    });
+
+    stage = "build-note-html";
+    const html = readingRouteNoteHTML(
       doc,
       itemID,
       markdown,
       existing,
       jumpLinks,
       quoteLinks,
-    ),
-  );
-  await target.note.saveTx();
-  return target;
+    );
+    debugZai("reading-route.save:html-built", {
+      noteID: target.note.id,
+      html: htmlStringDebugInfo(html),
+      htmlChars: readingRouteStringDiagnostics(html),
+    });
+
+    stage = "set-note";
+    try {
+      target.note.setNote(html);
+    } catch (err) {
+      debugZai("reading-route.save:set-note-failed", {
+        noteID: target.note.id,
+        error: readingRouteErrorDebugInfo(err),
+        html: htmlStringDebugInfo(html),
+        htmlChars: readingRouteStringDiagnostics(html),
+      });
+      throw err;
+    }
+
+    stage = "save-note";
+    try {
+      await target.note.saveTx();
+    } catch (err) {
+      debugZai("reading-route.save:save-tx-failed", {
+        noteID: target.note.id,
+        error: readingRouteErrorDebugInfo(err),
+        noteAfterSet: htmlStringDebugInfo(target.note.getNote?.() || ""),
+      });
+      throw err;
+    }
+
+    debugZai("reading-route.save:done", {
+      noteID: target.note.id,
+      ms: Date.now() - startedAt,
+    });
+    return target;
+  } catch (err) {
+    debugZai("reading-route.save:failed", {
+      itemID,
+      stage,
+      ms: Date.now() - startedAt,
+      error: readingRouteErrorDebugInfo(err),
+    });
+    throw err;
+  }
 }
 
 function readingRouteNoteHTML(
@@ -8713,41 +8804,290 @@ function readingRouteNoteHTML(
   jumpLinks: Map<string, PdfSelectionLocator> = new Map(),
   quoteLinks: Map<string, PdfSelectionLocator> = new Map(),
 ): string {
+  let stage = "init";
+  debugZai("reading-route.html:start", {
+    itemID,
+    markdown: textDebugInfo(markdown),
+    existing: htmlStringDebugInfo(existing),
+  });
   const root = doc.createElement("div");
-  const title = doc.createElement("h1");
-  title.append(dedicatedNoteMarker(doc, "readingRoute"));
-  title.append(doc.createTextNode(READING_ROUTE_NOTE_TITLE));
-  root.append(title);
+  try {
+    stage = "title";
+    const title = doc.createElement("h1");
+    title.append(dedicatedNoteMarker(doc, "readingRoute"));
+    title.append(doc.createTextNode(READING_ROUTE_NOTE_TITLE));
+    root.append(title);
 
-  const meta = doc.createElement("p");
-  const small = doc.createElement("small");
-  small.textContent =
-    `生成时间：${formatNoteTimestamp(new Date())}` +
-    " · 来源：Zotero AI Sidebar · 方法：Keshav three-pass approach";
-  meta.append(small);
-  root.append(meta);
+    stage = "metadata";
+    const meta = doc.createElement("p");
+    const small = doc.createElement("small");
+    small.textContent =
+      `生成时间：${formatNoteTimestamp(new Date())}` +
+      " · 来源：Zotero AI Sidebar · 方法：Keshav three-pass approach";
+    meta.append(small);
+    root.append(meta);
 
-  const body = doc.createElement("div");
-  renderMarkdownInto(body, markdown.trim(), "source");
-  linkReadingRoutePdfReferences(body, jumpLinks, itemID);
-  installPdfQuoteButtonsInElement(body, { sourceItemID: itemID, quoteLinks });
-  highlightReadingRouteKeyBullets(body);
-  while (body.firstChild) root.appendChild(body.firstChild);
+    stage = "render-markdown";
+    const body = doc.createElement("div");
+    renderMarkdownInto(body, markdown.trim(), "source");
+    debugZai("reading-route.html:markdown-rendered", {
+      body: readingRouteElementDebugInfo(body),
+    });
 
-  root.append(doc.createElement("hr"));
-  const manualHTML = extractReadingRouteManualHTML(doc, existing);
-  if (manualHTML) {
-    const manual = doc.createElement("div");
-    manual.innerHTML = manualHTML;
-    while (manual.firstChild) root.appendChild(manual.firstChild);
-  } else {
-    const manualTitle = doc.createElement("h2");
-    manualTitle.textContent = READING_ROUTE_MANUAL_HEADING;
-    manualTitle.setAttribute("data-zai-reading-route-manual", "true");
-    root.append(manualTitle, doc.createElement("p"));
+    stage = "link-references";
+    linkReadingRoutePdfReferences(body, jumpLinks, itemID);
+    debugZai("reading-route.html:references-linked", {
+      body: readingRouteElementDebugInfo(body),
+    });
+
+    stage = "link-quotes";
+    installPdfQuoteButtonsInElement(body, { sourceItemID: itemID, quoteLinks });
+    debugZai("reading-route.html:quotes-linked", {
+      body: readingRouteElementDebugInfo(body),
+    });
+
+    stage = "highlight-bullets";
+    highlightReadingRouteKeyBullets(body);
+    debugZai("reading-route.html:bullets-highlighted", {
+      body: readingRouteElementDebugInfo(body),
+    });
+
+    stage = "append-body";
+    while (body.firstChild) root.appendChild(body.firstChild);
+
+    stage = "extract-manual";
+    root.append(doc.createElement("hr"));
+    const manualNodes = extractReadingRouteManualNodes(doc, existing);
+    debugZai("reading-route.html:manual-extracted", {
+      hasManual: manualNodes.length > 0,
+      manual: readingRouteNodesDebugInfo(manualNodes),
+    });
+    if (manualNodes.length) {
+      stage = "append-existing-manual";
+      for (const node of manualNodes) root.appendChild(node);
+    } else {
+      stage = "append-empty-manual";
+      const manualTitle = doc.createElement("h2");
+      manualTitle.textContent = READING_ROUTE_MANUAL_HEADING;
+      manualTitle.setAttribute("data-zai-reading-route-manual", "true");
+      root.append(manualTitle, doc.createElement("p"));
+    }
+
+    stage = "serialize";
+    const html = String(root.innerHTML);
+    debugZai("reading-route.html:done", {
+      html: htmlStringDebugInfo(html),
+      htmlChars: readingRouteStringDiagnostics(html),
+    });
+    return html;
+  } catch (err) {
+    debugZai("reading-route.html:failed", {
+      stage,
+      error: readingRouteErrorDebugInfo(err),
+      root: readingRouteElementDebugInfo(root),
+    });
+    throw err;
+  }
+}
+
+function readingRouteElementDebugInfo(
+  root: HTMLElement,
+): Record<string, unknown> {
+  let html = "";
+  let htmlInfo: unknown = null;
+  try {
+    html = String(root.innerHTML);
+    htmlInfo = htmlStringDebugInfo(html);
+  } catch (err) {
+    htmlInfo = { error: readingRouteErrorDebugInfo(err) };
+  }
+  return {
+    childNodes: root.childNodes.length,
+    children: root.children.length,
+    headings: root.querySelectorAll("h1,h2,h3,h4,h5,h6").length,
+    lists: root.querySelectorAll("ul,ol").length,
+    listItems: root.querySelectorAll("li").length,
+    blockquotes: root.querySelectorAll("blockquote").length,
+    links: root.querySelectorAll("a").length,
+    quoteLinks: root.querySelectorAll(
+      "[data-zai-pdf-quote],.zai-pdf-quote-jump",
+    ).length,
+    referenceLinks: root.querySelectorAll("[data-zai-pdf-reference-label]")
+      .length,
+    math: root.querySelectorAll(".math,[data-latex]").length,
+    html: htmlInfo,
+    chars: html ? readingRouteStringDiagnostics(html) : null,
+  };
+}
+
+function readingRouteNodesDebugInfo(nodes: Node[]): Record<string, unknown> {
+  let html = "";
+  let htmlInfo: unknown = null;
+  try {
+    const doc = nodes[0]?.ownerDocument;
+    const root = doc?.createElement("div");
+    if (root) {
+      for (const node of nodes) root.appendChild(node.cloneNode(true));
+      html = String(root.innerHTML);
+      htmlInfo = htmlStringDebugInfo(html);
+    }
+  } catch (err) {
+    htmlInfo = { error: readingRouteErrorDebugInfo(err) };
   }
 
-  return String(root.innerHTML);
+  const elementNodes = nodes.filter((node) => node.nodeType === 1) as Element[];
+  return {
+    nodes: nodes.length,
+    elements: elementNodes.length,
+    topTags: elementNodes.slice(0, 8).map((node) => node.tagName),
+    text: textDebugInfo(nodes.map((node) => node.textContent || "").join(" ")),
+    html: htmlInfo,
+    chars: html ? readingRouteStringDiagnostics(html) : null,
+  };
+}
+
+function readingRouteErrorDebugInfo(err: unknown): Record<string, unknown> {
+  const anyErr = err as
+    | (Error & { code?: unknown; result?: unknown; name?: string })
+    | null
+    | undefined;
+  return {
+    name: anyErr?.name ?? (err == null ? String(err) : typeof err),
+    message: errorMessage(err),
+    code: anyErr?.code,
+    result: anyErr?.result,
+    stack:
+      typeof anyErr?.stack === "string"
+        ? textDebugInfo(anyErr.stack, 800)
+        : undefined,
+  };
+}
+
+function readingRouteStringDiagnostics(value: string): Record<string, unknown> {
+  const invalidControlSamples: Array<Record<string, unknown>> = [];
+  const surrogateSamples: Array<Record<string, unknown>> = [];
+  let invalidControls = 0;
+  let c1Controls = 0;
+  let loneSurrogates = 0;
+  let replacementChars = 0;
+  let lineSeparators = 0;
+
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if ((code >= 0x00 && code < 0x09) || (code > 0x0d && code < 0x20)) {
+      invalidControls++;
+      if (invalidControlSamples.length < 8) {
+        invalidControlSamples.push(readingRouteCodeUnitDebug(value, index));
+      }
+    } else if (code >= 0x7f && code <= 0x9f) {
+      c1Controls++;
+      if (invalidControlSamples.length < 8) {
+        invalidControlSamples.push(readingRouteCodeUnitDebug(value, index));
+      }
+    }
+
+    if (code === 0xfffd) replacementChars++;
+    if (code === 0x2028 || code === 0x2029) lineSeparators++;
+
+    const isHigh = code >= 0xd800 && code <= 0xdbff;
+    const isLow = code >= 0xdc00 && code <= 0xdfff;
+    const next = value.charCodeAt(index + 1);
+    const prev = value.charCodeAt(index - 1);
+    const pairedHigh = isHigh && next >= 0xdc00 && next <= 0xdfff;
+    const pairedLow = isLow && prev >= 0xd800 && prev <= 0xdbff;
+    if ((isHigh && !pairedHigh) || (isLow && !pairedLow)) {
+      loneSurrogates++;
+      if (surrogateSamples.length < 8) {
+        surrogateSamples.push(readingRouteCodeUnitDebug(value, index));
+      }
+    }
+  }
+
+  return {
+    length: value.length,
+    codePoints: Array.from(value).length,
+    invalidControls,
+    c1Controls,
+    loneSurrogates,
+    replacementChars,
+    lineSeparators,
+    invalidControlSamples,
+    surrogateSamples,
+  };
+}
+
+function readingRouteCodeUnitDebug(
+  value: string,
+  index: number,
+): Record<string, unknown> {
+  const code = value.charCodeAt(index);
+  return {
+    index,
+    codeUnit: `0x${code.toString(16).padStart(4, "0")}`,
+    before: value.slice(Math.max(0, index - 12), index).replace(/\s+/g, " "),
+    after: value.slice(index + 1, index + 13).replace(/\s+/g, " "),
+  };
+}
+
+function encodeURIComponentWithDebug(
+  value: string,
+  label: string,
+  detail: Record<string, unknown>,
+): string {
+  try {
+    return encodeURIComponent(value);
+  } catch (err) {
+    debugZai("reading-route.link:encode-failed", {
+      label,
+      ...detail,
+      value: textDebugInfo(value, 200),
+      chars: readingRouteStringDiagnostics(value),
+      error: readingRouteErrorDebugInfo(err),
+    });
+    throw err;
+  }
+}
+
+function assignHrefWithDebug(
+  link: HTMLAnchorElement,
+  href: string,
+  label: string,
+  detail: Record<string, unknown>,
+): void {
+  try {
+    link.href = href;
+  } catch (err) {
+    debugZai("reading-route.link:href-failed", {
+      label,
+      ...detail,
+      href: textDebugInfo(href, 200),
+      chars: readingRouteStringDiagnostics(href),
+      error: readingRouteErrorDebugInfo(err),
+    });
+    throw err;
+  }
+}
+
+function setAttributeWithDebug(
+  element: Element,
+  name: string,
+  value: string,
+  label: string,
+  detail: Record<string, unknown>,
+): void {
+  try {
+    element.setAttribute(name, value);
+  } catch (err) {
+    debugZai("reading-route.link:attribute-failed", {
+      label,
+      name,
+      ...detail,
+      value: textDebugInfo(value, 200),
+      chars: readingRouteStringDiagnostics(value),
+      error: readingRouteErrorDebugInfo(err),
+    });
+    throw err;
+  }
 }
 
 async function readingRoutePdfJumpLinks(
@@ -8814,6 +9154,14 @@ async function readingRoutePdfQuoteJumpLinks(
       )
       .filter(Boolean),
   );
+  debugZai("reading-route.quote-links:quotes", {
+    itemID,
+    count: quotes.length,
+    sample: quotes.slice(0, 6).map((quote) => ({
+      quote: textDebugInfo(quote, 120),
+      chars: readingRouteStringDiagnostics(quote),
+    })),
+  });
   if (!quotes.length) return links;
 
   const reader = getReaderForAttachmentOrItem(doc.defaultView, itemID, null);
@@ -8823,6 +9171,10 @@ async function readingRoutePdfQuoteJumpLinks(
   try {
     locator = await createPdfLocator(reader);
     for (const quote of quotes) {
+      debugZai("reading-route.quote-links:locate", {
+        quote: textDebugInfo(quote, 120),
+        chars: readingRouteStringDiagnostics(quote),
+      });
       const result = await locatePdfQuoteBlock(locator, quote);
       if (!result) continue;
       links.set(pdfQuoteLinkKey(quote), result);
@@ -8935,23 +9287,27 @@ function readingRoutePdfReferenceLink(
   return link;
 }
 
-function extractReadingRouteManualHTML(
+function extractReadingRouteManualNodes(
   doc: Document,
   existing: string,
-): string {
-  if (!existing.trim()) return "";
-  const root = doc.createElement("div");
-  root.innerHTML = existing;
+): Node[] {
+  if (!existing.trim()) return [];
+  const htmlDoc = doc.implementation.createHTMLDocument(
+    "zai-reading-route-existing",
+  );
+  const body = htmlDoc.body;
+  if (!body) return [];
+  body.innerHTML = existing;
   const heading = (
-    Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,h6")) as HTMLElement[]
+    Array.from(body.querySelectorAll("h1,h2,h3,h4,h5,h6")) as HTMLElement[]
   ).find((node) => node.textContent?.trim() === READING_ROUTE_MANUAL_HEADING);
-  if (!heading) return "";
+  if (!heading) return [];
 
-  const manual = doc.createElement("div");
+  const nodes: Node[] = [];
   for (let node: any = heading; node; node = node.nextSibling) {
-    manual.appendChild(node.cloneNode(true));
+    nodes.push(doc.importNode(node, true));
   }
-  return String(manual.innerHTML).trim();
+  return nodes;
 }
 
 function escapeHTML(value: string): string {
@@ -9413,10 +9769,26 @@ function applyPdfSelectionLinkAttributes(
   baseHref: string = pdfOpenUrlForSelection(selection),
 ): void {
   const data = JSON.stringify(pdfSelectionForNoteData(selection));
-  link.href = `${baseHref || "#"}${NOTE_PDF_SELECTION_HASH_MARKER}${encodeURIComponent(
+  const detail = {
+    attachmentID: selection.attachmentID,
+    pageIndex: selection.pageIndex,
+    selectedText: textDebugInfo(selection.selectedText ?? "", 160),
+    data: textDebugInfo(data, 160),
+  };
+  const encoded = encodeURIComponentWithDebug(data, "pdf-selection", detail);
+  assignHrefWithDebug(
+    link,
+    `${baseHref || "#"}${NOTE_PDF_SELECTION_HASH_MARKER}${encoded}`,
+    "pdf-selection",
+    detail,
+  );
+  setAttributeWithDebug(
+    link,
+    "data-zai-pdf-selection",
     data,
-  )}`;
-  link.setAttribute("data-zai-pdf-selection", data);
+    "pdf-selection",
+    detail,
+  );
 }
 
 function applyPdfQuoteLinkAttributes(
@@ -9437,23 +9809,47 @@ function applyPdfQuoteLinkAttributes(
           ...(preferredAttachmentID != null ? { preferredAttachmentID } : {}),
           ...(preferredPageIndex != null ? { preferredPageIndex } : {}),
         });
-  link.href = `#${NOTE_PDF_QUOTE_HASH_MARKER.slice(1)}${encodeURIComponent(
-    payload,
-  )}`;
-  link.setAttribute("data-zai-pdf-quote", quote);
+  const detail = {
+    sourceItemID,
+    preferredAttachmentID,
+    preferredPageIndex,
+    quote: textDebugInfo(quote, 160),
+    quoteChars: readingRouteStringDiagnostics(quote),
+    payload: textDebugInfo(payload, 160),
+  };
+  const encoded = encodeURIComponentWithDebug(payload, "pdf-quote", detail);
+  assignHrefWithDebug(
+    link,
+    `#${NOTE_PDF_QUOTE_HASH_MARKER.slice(1)}${encoded}`,
+    "pdf-quote",
+    detail,
+  );
+  setAttributeWithDebug(link, "data-zai-pdf-quote", quote, "pdf-quote", detail);
   if (sourceItemID != null) {
-    link.setAttribute("data-zai-pdf-source-item-id", String(sourceItemID));
+    setAttributeWithDebug(
+      link,
+      "data-zai-pdf-source-item-id",
+      String(sourceItemID),
+      "pdf-quote",
+      detail,
+    );
   }
   if (preferredAttachmentID != null) {
-    link.setAttribute(
+    setAttributeWithDebug(
+      link,
       "data-zai-pdf-source-attachment-id",
       String(preferredAttachmentID),
+      "pdf-quote",
+      detail,
     );
   }
   if (preferredPageIndex != null) {
-    link.setAttribute(
+    setAttributeWithDebug(
+      link,
       "data-zai-pdf-source-page-index",
       String(preferredPageIndex),
+      "pdf-quote",
+      detail,
     );
   }
 }

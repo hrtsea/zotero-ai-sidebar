@@ -94,48 +94,105 @@ Do not hardcode personal API keys, base URLs, or private model IDs in this repos
 ### Sync & config
 
 - **Config backup & restore**: export/import account presets, UI settings, quick prompts, and tool/MCP settings as a single JSON file.
-- **WebDAV cloud sync**: push and pull settings, quick prompts, translation settings, and selected paper annotations to a WebDAV endpoint (e.g. Nutstore) via a single `state.json` snapshot.
-- **Local chat and translation cache**: conversation history and sentence-translation cache are stored under Zotero's local data directory (usually `~/Zotero/`) and are not uploaded by the plugin's WebDAV sync.
+- **WebDAV cloud sync**: push and pull settings, quick prompts, translation settings, and selected text / annotation references to a WebDAV endpoint (e.g. Nutstore) via a single `state.json` snapshot.
+- **Local chat and translation cache**: conversation history and sentence-translation cache are stored under Zotero's local data/profile directory and are not uploaded by the plugin's WebDAV sync.
 - **Local-first config**: API keys, base URLs, model names, and private provider settings stay in Zotero prefs, not in source code.
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Zotero[Zotero main window]
+flowchart TB
+    User([You])
+
+    subgraph UI[Zotero main window]
+        direction LR
+        Side[AI sidebar]
         PDF[PDF Reader]
         Note[Note editor]
-        Side[AI sidebar]
+        Side --> PDF
+        Side --> Note
     end
-    User([You]) -->|prompt / selection / screenshot| Side
-    Side -->|tool calls| Tools[Local AgentTool]
-    Tools -->|read / write| Zotero
-    Side <-->|HTTPS| Provider[OpenAI / Anthropic /<br/>OpenAI-compatible]
-    Side -.settings / prompts / annotations.-> WebDAV[(WebDAV cloud<br/>e.g. Nutstore)]
-    Side -.chat history / translation cache.-> LocalFiles[(Local Zotero data dir<br/>~/Zotero/)]
-    Zotero -.PDF files.-> WebDAV
-    Zotero -.library metadata.-> ZoteroOrg[(zotero.org)]
+
+    subgraph Local[Local data boundary]
+        direction LR
+        Core[(Zotero library<br/>items + Zotero annotations)]
+        Files[(Attachment files<br/>storage/*)]
+        PluginState[(Plugin sync state<br/>settings / prompts / refs)]
+        Cache[(Local-only cache<br/>chat + translation)]
+    end
+
+    subgraph Runtime[Runtime integrations]
+        direction LR
+        Provider[LLM provider API<br/>OpenAI / Anthropic / compatible]
+        Tools[Local AgentTool<br/>optional automation]
+    end
+
+    subgraph Cloud[Cloud sync targets]
+        direction LR
+        ZoteroOrg[(zotero.org<br/>metadata sync)]
+        FileDAV[(WebDAV<br/>Zotero File Sync)]
+        PluginDAV[(Plugin WebDAV<br/>state.json)]
+    end
+
+    User -->|prompt / selection / screenshot| Side
+    Side <-->|HTTPS| Provider
+    Side -->|tools| Tools
+    Tools --> Core
+    Side --> Cache
+    Side --> PluginState
+    Core --- Files
+
+    Core -.items + Zotero annotations.-> ZoteroOrg
+    Files -.attachment sync.-> FileDAV
+    PluginState -.push / pull.-> PluginDAV
+
+    classDef actor fill:#fff7ed,stroke:#fb923c,color:#7c2d12,stroke-width:1px;
+    classDef zotero fill:#eef2ff,stroke:#818cf8,color:#312e81,stroke-width:1px;
+    classDef local fill:#ecfeff,stroke:#06b6d4,color:#164e63,stroke-width:1px;
+    classDef runtime fill:#f5f3ff,stroke:#a78bfa,color:#4c1d95,stroke-width:1px;
+    classDef cloud fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1px;
+    class User actor;
+    class Side,PDF,Note zotero;
+    class Core,Files,PluginState,Cache local;
+    class Provider,Tools runtime;
+    class ZoteroOrg,FileDAV,PluginDAV cloud;
+    style UI fill:#f8fafc,stroke:#c7d2fe,stroke-width:1px
+    style Local fill:#ecfeff,stroke:#67e8f9,stroke-width:1px
+    style Runtime fill:#faf5ff,stroke:#d8b4fe,stroke-width:1px
+    style Cloud fill:#f0fdf4,stroke:#86efac,stroke-width:1px
 ```
 
 ### Three-layer cloud-sync split
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph Local[Local machine]
-        Lib[(Zotero library + annotations)]
-        Storage[storage/*.pdf]
-        Plugin[Plugin sync state<br/>settings / prompts / selected annotations]
-        LocalState[Local-only state<br/>chat history / translation cache]
+        direction TB
+        Lib[(Zotero library metadata<br/>items + Zotero annotations)]
+        Storage[Zotero attachment files<br/>storage/*]
+        Plugin[Plugin sync state<br/>settings / prompts / selected text or annotation refs]
+        LocalState[Local-only state<br/>chat history / translation cache<br/>never uploaded by plugin sync]
     end
     subgraph Cloud[Cloud]
-        ZS[zotero.org<br/>free 300MB tier]
+        direction TB
+        ZS[zotero.org<br/>metadata sync]
         WD1[WebDAV<br/>Zotero File Sync writes]
-        WD2[WebDAV<br/>this plugin writes]
+        WD2[WebDAV plugin namespace<br/>plugin state snapshot]
+        NoCloud[No cloud copy]
     end
     Lib <-->|metadata sync| ZS
     Storage <-->|file sync| WD1
     Plugin <-->|push / pull| WD2
-    LocalState -.not uploaded by plugin sync.-> Local
+    LocalState -.no sync.-> NoCloud
+
+    classDef local fill:#ecfeff,stroke:#06b6d4,color:#164e63,stroke-width:1px;
+    classDef cloud fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1px;
+    classDef blocked fill:#fff1f2,stroke:#fb7185,color:#881337,stroke-width:1px,stroke-dasharray:4 3;
+    class Lib,Storage,Plugin,LocalState local;
+    class ZS,WD1,WD2 cloud;
+    class NoCloud blocked;
+    style Local fill:#ecfeff,stroke:#67e8f9,stroke-width:1px
+    style Cloud fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px
 ```
 
 ## Development

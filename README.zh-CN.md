@@ -94,48 +94,105 @@ PDF 逐句翻译可在插件设置的“翻译”区域调整：
 ### 同步与配置
 
 - **配置备份与恢复**：把账号预设、显示设置、快捷提示词、联网/MCP 设置打包为一个 JSON 文件，可导出 / 导入。
-- **WebDAV 云同步**：将设置、快捷提示词、翻译设置以及指定论文注释，通过单个 `state.json` 快照推送到 / 拉取自任意 WebDAV 端点（如坚果云）。
-- **对话和翻译缓存本地保存**：对话历史和逐句翻译缓存保存在 Zotero 本地数据目录（通常是 `~/Zotero/`）下，不会被插件的 WebDAV 同步上传。
+- **WebDAV 云同步**：将设置、快捷提示词、翻译设置以及选中文本 / 注释引用，通过单个 `state.json` 快照推送到 / 拉取自任意 WebDAV 端点（如坚果云）。
+- **对话和翻译缓存本地保存**：对话历史和逐句翻译缓存保存在 Zotero 本地数据 / profile 目录下，不会被插件的 WebDAV 同步上传。
 - **本地优先**：API Key、Base URL、模型名以及私有提供商配置都保存在 Zotero 偏好里，不写进源代码。
 
 ## 总体架构
 
 ```mermaid
-flowchart LR
-    subgraph Zotero[Zotero 主窗口]
+flowchart TB
+    User([你])
+
+    subgraph UI[Zotero 主窗口]
+        direction LR
+        Side[AI 侧边栏]
         PDF[PDF Reader]
         Note[笔记编辑器]
-        Side[AI 侧边栏]
+        Side --> PDF
+        Side --> Note
     end
-    User([你]) -->|提问 / 选区 / 截图| Side
-    Side -->|工具调用| Tools[本地 AgentTool]
-    Tools -->|读 / 写| Zotero
-    Side <-->|HTTPS| Provider[OpenAI / Anthropic /<br/>OpenAI 兼容端点]
-    Side -.设置 / 提示词 / 注释.-> WebDAV[(坚果云 WebDAV)]
-    Side -.对话历史 / 翻译缓存.-> LocalFiles[(Zotero 本地数据目录<br/>~/Zotero/)]
-    Zotero -.PDF 文件.-> WebDAV
-    Zotero -.题录元数据.-> ZoteroOrg[(zotero.org)]
+
+    subgraph Local[本地数据边界]
+        direction LR
+        Core[(Zotero 库<br/>题录 + Zotero 注释)]
+        Files[(PDF 附件文件<br/>storage/*)]
+        PluginState[(插件同步状态<br/>设置 / 提示词 / 引用)]
+        Cache[(仅本地缓存<br/>对话 + 翻译)]
+    end
+
+    subgraph Runtime[运行时集成]
+        direction LR
+        Provider[LLM 提供商 API<br/>OpenAI / Anthropic / 兼容端点]
+        Tools[本地 AgentTool<br/>可选自动化]
+    end
+
+    subgraph Cloud[云端同步目标]
+        direction LR
+        ZoteroOrg[(zotero.org<br/>元数据同步)]
+        FileDAV[(WebDAV<br/>Zotero File Sync)]
+        PluginDAV[(插件 WebDAV<br/>state.json)]
+    end
+
+    User -->|提问 / 选区 / 截图| Side
+    Side <-->|HTTPS| Provider
+    Side -->|工具| Tools
+    Tools --> Core
+    Side --> Cache
+    Side --> PluginState
+    Core --- Files
+
+    Core -.题录 + Zotero 注释.-> ZoteroOrg
+    Files -.附件同步.-> FileDAV
+    PluginState -.推送 / 拉取.-> PluginDAV
+
+    classDef actor fill:#fff7ed,stroke:#fb923c,color:#7c2d12,stroke-width:1px;
+    classDef zotero fill:#eef2ff,stroke:#818cf8,color:#312e81,stroke-width:1px;
+    classDef local fill:#ecfeff,stroke:#06b6d4,color:#164e63,stroke-width:1px;
+    classDef runtime fill:#f5f3ff,stroke:#a78bfa,color:#4c1d95,stroke-width:1px;
+    classDef cloud fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1px;
+    class User actor;
+    class Side,PDF,Note zotero;
+    class Core,Files,PluginState,Cache local;
+    class Provider,Tools runtime;
+    class ZoteroOrg,FileDAV,PluginDAV cloud;
+    style UI fill:#f8fafc,stroke:#c7d2fe,stroke-width:1px
+    style Local fill:#ecfeff,stroke:#67e8f9,stroke-width:1px
+    style Runtime fill:#faf5ff,stroke:#d8b4fe,stroke-width:1px
+    style Cloud fill:#f0fdf4,stroke:#86efac,stroke-width:1px
 ```
 
 ### 三层云同步分工
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph Local[本机]
-        Lib[(Zotero 库 + 注释)]
-        Storage[storage/*.pdf]
-        Plugin[插件同步状态<br/>设置 / 提示词 / 指定注释]
-        LocalState[仅本地状态<br/>对话历史 / 翻译缓存]
+        direction TB
+        Lib[(Zotero 库元数据<br/>题录 + Zotero 注释)]
+        Storage[Zotero 附件文件<br/>storage/*]
+        Plugin[插件同步状态<br/>设置 / 提示词 / 选中文本或注释引用]
+        LocalState[仅本地状态<br/>对话历史 / 翻译缓存<br/>不会被插件同步上传]
     end
     subgraph Cloud[云端]
-        ZS[zotero.org<br/>免费 300MB]
+        direction TB
+        ZS[zotero.org<br/>元数据同步]
         WD1[坚果云 WebDAV<br/>Zotero File Sync 写入]
-        WD2[坚果云 WebDAV<br/>本插件写入]
+        WD2[插件 WebDAV 命名空间<br/>插件状态快照]
+        NoCloud[无云端副本]
     end
-    Lib <-->|metadata sync| ZS
-    Storage <-->|file sync| WD1
-    Plugin <-->|push / pull| WD2
-    LocalState -.不通过插件同步上传.-> Local
+    Lib <-->|元数据同步| ZS
+    Storage <-->|文件同步| WD1
+    Plugin <-->|推送 / 拉取| WD2
+    LocalState -.不上传.-> NoCloud
+
+    classDef local fill:#ecfeff,stroke:#06b6d4,color:#164e63,stroke-width:1px;
+    classDef cloud fill:#f0fdf4,stroke:#22c55e,color:#14532d,stroke-width:1px;
+    classDef blocked fill:#fff1f2,stroke:#fb7185,color:#881337,stroke-width:1px,stroke-dasharray:4 3;
+    class Lib,Storage,Plugin,LocalState local;
+    class ZS,WD1,WD2 cloud;
+    class NoCloud blocked;
+    style Local fill:#ecfeff,stroke:#67e8f9,stroke-width:1px
+    style Cloud fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px
 ```
 
 ## 开发
