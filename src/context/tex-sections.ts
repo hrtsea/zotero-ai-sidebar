@@ -46,7 +46,12 @@ const HEADER_RE =
 const LABEL_RE = /\\label\{([^}]+)\}/;
 
 export function parseSections(text: string): TexSection[] {
-  const headers: { command: string; title: string; index: number; end: number }[] = [];
+  const headers: {
+    command: string;
+    title: string;
+    index: number;
+    end: number;
+  }[] = [];
   HEADER_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = HEADER_RE.exec(text)) !== null) {
@@ -69,7 +74,8 @@ export function parseSections(text: string): TexSection[] {
     counters[level - 1] += 1;
     const number = counters.slice(0, level).join(".");
 
-    const nextIndex = i + 1 < headers.length ? headers[i + 1].index : text.length;
+    const nextIndex =
+      i + 1 < headers.length ? headers[i + 1].index : text.length;
     const bodyText = text.slice(cur.end, nextIndex);
     // Capture a `\label{}` only if it appears reasonably close to the
     // header — papers conventionally put the label right after the title.
@@ -155,7 +161,8 @@ export function formatTocBlock(toc: TexTocEntry[]): string {
     "  • arxiv_list_sections() — refresh this list as JSON",
     "  • arxiv_get_section(section) — fetch ONE section by number ('3.1'),",
     "    label ('sec:method'), or a substring of its title ('methodology')",
-    "  • arxiv_get_figure(name) — attach a raster figure named in LaTeX",
+    "  • arxiv_get_equation(number) — fetch one numbered equation, e.g. 3",
+    "  • arxiv_get_figure(number/name) — attach one figure image, e.g. Figure 3",
     "  • arxiv_get_bibliography() — fetch .bbl/.bib references on demand",
     "  • zotero_get_full_pdf() — upgrade to the full LaTeX source if needed",
     "For whole-paper summaries/reviews, call zotero_get_full_pdf() before answering.",

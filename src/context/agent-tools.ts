@@ -14,8 +14,13 @@ import { extractPdfRange, searchPdfPassages } from "./retrieval";
 import {
   currentItemKey,
   loadArxivBibliography,
+  formatArxivEquationMiss,
+  formatArxivEquationResult,
+  formatArxivFigureMiss,
+  formatArxivFigureResult,
+  loadArxivEquation,
+  loadArxivFigureByQuery,
   loadArxivSections,
-  loadArxivFigureAsImage,
 } from "./arxiv-tools";
 import { hasArxivSource } from "./arxiv-store";
 import { findSection, buildToc, isArxivTocBlock } from "./tex-sections";
@@ -258,7 +263,9 @@ export function createZoteroAgentToolSession(
         let text = await getFrozenFullText(itemID);
         if (text != null && isArxivTocBlock(text)) text = null;
         if (text != null) {
-          text = normalizeLatexSourceCommands(normalizeLatexListEnvironments(text));
+          text = normalizeLatexSourceCommands(
+            normalizeLatexListEnvironments(text),
+          );
         }
         let truncated = false;
         let totalChars = 0;
@@ -332,31 +339,64 @@ export function createZoteroAgentToolSession(
     {
       name: "arxiv_get_figure",
       description:
-        "Fetch a cached figure of the current arXiv paper and attach it as an image the model can SEE in a follow-up multimodal turn. `name` is the figure file's basename (e.g. 'robot_system_overview'), an exact relative path ('figures/attention_mask.png'), or a unique substring of the name. Look for candidate names in the LaTeX `\\includegraphics{...}` references that appear in section bodies fetched via arxiv_get_section. Only raster figures (PNG/JPG/GIF/WebP) are returned — vector figures stored as .pdf/.eps cannot be sent. Only works when the current item has a cached arXiv source.",
-      parameters: objectSchema(
-        {
-          name: stringSchema(
-            "Figure basename, relative path, or substring (e.g. 'robot_system_overview').",
-          ),
-        },
-        ["name"],
-      ),
+        "Fetch a figure from the current arXiv paper and attach it as an image the model can SEE in a follow-up multimodal turn. Use `number` for user requests such as 'Figure 3' / '图3' / 'Fig. 3'; `label` for a LaTeX figure label; or `name` for a figure basename, relative path, caption substring, or includegraphics substring. Raster source files (PNG/JPG/GIF/WebP) are attached directly. Vector source files (.pdf/.eps) are cropped from the active Zotero PDF Reader when possible, so keep the PDF open for best results. Only works when the current item has a cached arXiv source.",
+      parameters: objectSchema({
+        number: numberSchema(
+          "Compiled figure number, e.g. 3 for Figure 3. Optional if label or name is provided.",
+        ),
+        label: stringSchema(
+          "LaTeX figure label, e.g. fig:occupancy. Optional if number or name is provided.",
+        ),
+        name: stringSchema(
+          "Figure basename, relative path, caption substring, or includegraphics substring (e.g. 'occupancy' or 'figures/occupancy.pdf'). Optional if number or label is provided.",
+        ),
+      }),
       execute: async (args) => {
         const parsed = objectArgs(args);
-        const name = stringArg(parsed, "name").trim();
-        if (!name)
+        const number = numberArg(parsed, "number") ?? undefined;
+        const label = stringArg(parsed, "label") || undefined;
+        const name = stringArg(parsed, "name") || undefined;
+        if (number == null && !label && !name) {
           return errorResult(
-            "arxiv_get_figure requires a non-empty `name` argument.",
+            "arxiv_get_figure requires `number`, `label`, or `name`.",
           );
-        const loaded = await loadArxivFigureAsImage(options, name);
-        if (!loaded)
+        }
+        const loaded = await loadArxivFigureByQuery(options, {
+          number,
+          label,
+          name,
+        });
+        if (!loaded) {
           return errorResult(
-            `No cached raster figure matched: ${name}. The figure may be vector-only (.pdf/.eps), absent from the source, or the item has no cached arXiv source.`,
+            "This item has no cached arXiv source — use the PDF tools instead.",
           );
+        }
+        if (!loaded.figure) {
+          return errorResult(
+            formatArxivFigureMiss(loaded.figures, { number, label, name }),
+          );
+        }
         return {
-          output: `[arXiv figure attached: ${loaded.path}]`,
-          summary: `读取 arXiv 图: ${loaded.path}`,
-          images: [loaded.image],
+          output: formatArxivFigureResult({
+            ...loaded,
+            figure: loaded.figure,
+          }),
+          summary: `读取 arXiv Figure ${loaded.figure.number}${loaded.image ? "（含图像）" : "（仅文字）"}`,
+          ...(loaded.image ? { images: [loaded.image] } : {}),
+          context: {
+            planMode: "figure",
+            sourceKind: "zotero_item",
+            sourceID:
+              options.itemID != null ? String(options.itemID) : undefined,
+            figureNumber: loaded.figure.number,
+            ...(loaded.figure.label
+              ? { figureLabel: loaded.figure.label }
+              : {}),
+            ...(loaded.figure.caption
+              ? { figureCaption: loaded.figure.caption }
+              : {}),
+            figureImageAttached: !!loaded.image,
+          },
         };
       },
     },
@@ -399,6 +439,58 @@ export function createZoteroAgentToolSession(
               options.itemID != null ? String(options.itemID) : undefined,
             fullTextChars: body.length,
             fullTextSource: "arxiv",
+          },
+        };
+      },
+    },
+    {
+      name: "arxiv_get_equation",
+      description:
+        "Return one numbered equation from the current arXiv paper's cached LaTeX source by compiled equation number (e.g. 3 for 'Equation (3)' / '公式3') or by LaTeX label (e.g. 'eq:loss'). Use this before answering questions that mention a specific formula/equation number, because PDF-visible numbers like '(3)' are generated at compile time and are not reliable in plain section text. The result includes display math for final answers and exact LaTeX source for verification; prefer the display math unless the user asks for raw/source LaTeX.",
+      parameters: objectSchema({
+        number: numberSchema(
+          "Compiled equation number, e.g. 3 for Equation (3). Optional if label is provided.",
+        ),
+        label: stringSchema(
+          "LaTeX equation label, e.g. eq:mix_schedule. Optional if number is provided.",
+        ),
+      }),
+      execute: async (args) => {
+        const parsed = objectArgs(args);
+        const number = numberArg(parsed, "number") ?? undefined;
+        const label = stringArg(parsed, "label") || undefined;
+        if (number == null && !label) {
+          return errorResult(
+            "arxiv_get_equation requires either `number` or `label`.",
+          );
+        }
+        const loaded = await loadArxivEquation(options, { number, label });
+        if (!loaded) {
+          return errorResult(
+            "This item has no cached arXiv source — use the PDF tools instead.",
+          );
+        }
+        if (!loaded.equation) {
+          return errorResult(
+            formatArxivEquationMiss(loaded.equations, { number, label }),
+          );
+        }
+        return {
+          output: formatArxivEquationResult({
+            ...loaded,
+            equation: loaded.equation,
+          }),
+          summary: `读取 arXiv 公式 (${loaded.equation.number})`,
+          context: {
+            planMode: "equation",
+            sourceKind: "zotero_item",
+            sourceID:
+              options.itemID != null ? String(options.itemID) : undefined,
+            equationNumber: loaded.equation.number,
+            ...(loaded.equation.label
+              ? { equationLabel: loaded.equation.label }
+              : {}),
+            equationChars: loaded.equation.tex.length,
           },
         };
       },
@@ -613,12 +705,16 @@ function createTextAnnotationNearSelectionTool(
           "zotero_add_text_annotation_to_selection requires a non-empty comment.",
         );
       }
-      const saved = await saveTextAnnotationNearSelection(draft, {
-        comment,
-        color: stringArg(parsed, "color") || undefined,
-        fontSize: numberArg(parsed, "fontSize") ?? undefined,
-        placement: textAnnotationPlacementArg(parsed),
-      }, options.getActiveReader?.());
+      const saved = await saveTextAnnotationNearSelection(
+        draft,
+        {
+          comment,
+          color: stringArg(parsed, "color") || undefined,
+          fontSize: numberArg(parsed, "fontSize") ?? undefined,
+          placement: textAnnotationPlacementArg(parsed),
+        },
+        options.getActiveReader?.(),
+      );
       return {
         output: [
           "[Saved Zotero PDF text annotation]",
@@ -1004,7 +1100,9 @@ function createPreviousContextTool(
       const end = numberArg(parsed, "end");
       const query = stringArg(parsed, "query")?.toLowerCase();
       const maxChars = clamp(
-        Math.floor(numberArg(parsed, "maxChars") ?? policy.retainedContextCharBudget),
+        Math.floor(
+          numberArg(parsed, "maxChars") ?? policy.retainedContextCharBudget,
+        ),
         1000,
         policy.retainedContextCharBudget * 4,
       );
@@ -1013,7 +1111,9 @@ function createPreviousContextTool(
           "chat_get_previous_context requires both start and end when filtering by range.",
         );
       }
-      const candidates = previousContextCandidates(options.previousMessages ?? []);
+      const candidates = previousContextCandidates(
+        options.previousMessages ?? [],
+      );
       const matches = candidates.filter((candidate) => {
         if (sourceKind && candidate.sourceKind !== sourceKind) return false;
         if (sourceID && candidate.sourceID !== sourceID) return false;
@@ -1039,7 +1139,10 @@ function createPreviousContextTool(
         };
       }
       const passages = selected.map((candidate) => candidate.passage);
-      const chars = passages.reduce((sum, passage) => sum + passage.text.length, 0);
+      const chars = passages.reduce(
+        (sum, passage) => sum + passage.text.length,
+        0,
+      );
       const source = selected[0];
       return {
         output: [
@@ -1047,9 +1150,13 @@ function createPreviousContextTool(
           ...selected.map((candidate, index) =>
             [
               `#${index + 1} turn ${candidate.turn}`,
-              candidate.sourceKind ? `Source kind: ${candidate.sourceKind}` : "",
+              candidate.sourceKind
+                ? `Source kind: ${candidate.sourceKind}`
+                : "",
               candidate.sourceID ? `Source ID: ${candidate.sourceID}` : "",
-              candidate.sourceTitle ? `Source title: ${candidate.sourceTitle}` : "",
+              candidate.sourceTitle
+                ? `Source title: ${candidate.sourceTitle}`
+                : "",
               candidate.sourceUrl ? `Source URL: ${candidate.sourceUrl}` : "",
               `Range: ${candidate.passage.start}-${candidate.passage.end}`,
               "",
@@ -1076,11 +1183,16 @@ function createPreviousContextTool(
   };
 }
 
-function previousContextCandidates(messages: Message[]): PreviousContextCandidate[] {
+function previousContextCandidates(
+  messages: Message[],
+): PreviousContextCandidate[] {
   const candidates: PreviousContextCandidate[] = [];
   const seen = new Set<string>();
   messages.forEach((message, index) => {
-    if (message.role !== "user" || !message.context?.retrievedPassages?.length) {
+    if (
+      message.role !== "user" ||
+      !message.context?.retrievedPassages?.length
+    ) {
       return;
     }
     for (const passage of message.context.retrievedPassages) {
@@ -1252,20 +1364,26 @@ function createDrawMindmapTool(options: ToolFactoryOptions): AgentTool {
       properties: {
         title: {
           type: "string",
-          description: "Optional chart title, usually the article or paper title.",
+          description:
+            "Optional chart title, usually the article or paper title.",
         },
         nodes: {
           type: "array",
-          description: "Graph nodes. Each node has an id, a display label, and an optional type.",
+          description:
+            "Graph nodes. Each node has an id, a display label, and an optional type.",
           items: {
             type: "object",
             properties: {
               id: { type: "string", description: "Unique node identifier." },
-              label: { type: "string", description: "Display label (≤30 chars)." },
+              label: {
+                type: "string",
+                description: "Display label (≤30 chars).",
+              },
               type: {
                 type: "string",
                 enum: ["root", "section", "point"],
-                description: "root: central thesis; section: major argument/chapter; point: detail.",
+                description:
+                  "root: central thesis; section: major argument/chapter; point: detail.",
               },
             },
             required: ["id", "label"],
@@ -1298,7 +1416,10 @@ function createDrawMindmapTool(options: ToolFactoryOptions): AgentTool {
       const nodes = rawNodes
         .filter(
           (n): n is Record<string, unknown> =>
-            n && typeof n === "object" && typeof n.id === "string" && typeof n.label === "string",
+            n &&
+            typeof n === "object" &&
+            typeof n.id === "string" &&
+            typeof n.label === "string",
         )
         .map((n) => ({
           id: n.id as string,
@@ -1315,12 +1436,14 @@ function createDrawMindmapTool(options: ToolFactoryOptions): AgentTool {
             typeof e.source === "string" &&
             typeof e.target === "string",
         )
-        .map((e) => ({ source: e.source as string, target: e.target as string }));
+        .map((e) => ({
+          source: e.source as string,
+          target: e.target as string,
+        }));
       if (nodes.length === 0) {
         return errorResult("draw_article_mindmap requires at least one node.");
       }
-      const title =
-        typeof parsed.title === "string" ? parsed.title : undefined;
+      const title = typeof parsed.title === "string" ? parsed.title : undefined;
       const data: MindmapData = { title, nodes, edges };
       options.onMindmapReady?.(data);
       return {
@@ -1410,8 +1533,7 @@ export async function saveTextAnnotationNearSelection(
   // attachment: clear any stale read-only flag left by a previous failed save,
   // and select the new annotation so it's visually highlighted. Both are
   // strictly cosmetic — failures here MUST NOT mask the successful DB write.
-  const targetReader =
-    reader ?? findOpenReaderForAttachment(attachment.id);
+  const targetReader = reader ?? findOpenReaderForAttachment(attachment.id);
   if (targetReader) {
     nudgeReaderAfterSave(targetReader, attachment, key);
   }
@@ -1448,7 +1570,10 @@ async function runSaveFromJSON(
   // JSON. Every object in the call lives in the chrome compartment, so no
   // cross-compartment wrapping happens. This is the most robust path.
   const chromeSave = chromeWin?.Zotero?.Annotations?.saveFromJSON;
-  if (typeof chromeSave === "function" && typeof chromeWin?.JSON?.parse === "function") {
+  if (
+    typeof chromeSave === "function" &&
+    typeof chromeWin?.JSON?.parse === "function"
+  ) {
     try {
       const chromeJSON = chromeWin.JSON.parse(jsonString);
       const result = await chromeSave.call(
@@ -1469,12 +1594,16 @@ async function runSaveFromJSON(
 
   // Strategy B: addon-scope saveFromJSON with explicit Components.utils.cloneInto
   // into chrome. Use chrome window's Cu (more reliable than addon's globalThis).
-  const Cu = chromeWin?.Components?.utils ?? (globalThis as any).Components?.utils;
+  const Cu =
+    chromeWin?.Components?.utils ?? (globalThis as any).Components?.utils;
   if (Cu?.cloneInto && chromeWin) {
     try {
       const plain = JSON.parse(jsonString);
       const cloned = Cu.cloneInto(plain, chromeWin);
-      const result = await fallbackZ.Annotations.saveFromJSON(attachment, cloned);
+      const result = await fallbackZ.Annotations.saveFromJSON(
+        attachment,
+        cloned,
+      );
       debugAgentTool("text-annotation.save.B.cu-cloneInto.ok", {
         itemID: result?.id,
       });
@@ -1647,9 +1776,7 @@ function readerAttachmentIDForTool(reader: unknown): number | null {
 function findOpenReaderForAttachment(attachmentID: number): unknown | null {
   try {
     const Z = (globalThis as any).Zotero;
-    const readers = Array.isArray(Z?.Reader?._readers)
-      ? Z.Reader._readers
-      : [];
+    const readers = Array.isArray(Z?.Reader?._readers) ? Z.Reader._readers : [];
     return (
       readers.find(
         (reader: unknown) => readerAttachmentIDForTool(reader) === attachmentID,
@@ -1723,8 +1850,7 @@ function textAnnotationJSONFromSelection(
       patch.color || stringValue(base.color) || Z.Annotations.DEFAULT_COLOR,
     pageLabel: stringValue(base.pageLabel) || String(anchor.pageIndex + 1),
     sortIndex:
-      stringValue(base.sortIndex) ||
-      fallbackSortIndex(anchor.pageIndex, rect),
+      stringValue(base.sortIndex) || fallbackSortIndex(anchor.pageIndex, rect),
     position: {
       pageIndex: anchor.pageIndex,
       fontSize,
@@ -1737,7 +1863,9 @@ function textAnnotationJSONFromSelection(
 function textAnnotationAnchor(
   position: object,
 ): { pageIndex: number; rect: [number, number, number, number] } | null {
-  const pageIndex = numberValue((position as { pageIndex?: unknown }).pageIndex);
+  const pageIndex = numberValue(
+    (position as { pageIndex?: unknown }).pageIndex,
+  );
   const rects = (position as { rects?: unknown }).rects;
   if (pageIndex == null || !Array.isArray(rects)) return null;
   const usable = rects.flatMap((rect) => {
@@ -1979,7 +2107,10 @@ function formatMetadata(item: ItemMetadata): string {
 // Token-to-char heuristic shared with builder.ts: 1 token ≈ 4 chars.
 // GOTCHA: this is a rough OAI/Anthropic English heuristic; CJK uses fewer
 // chars per token, so this *over-budgets* tokens for Chinese papers (safe).
-export function truncateByTokenBudget(text: string, tokenBudget: number): string {
+export function truncateByTokenBudget(
+  text: string,
+  tokenBudget: number,
+): string {
   const charBudget = tokenBudget * 4;
   return text.length > charBudget ? text.slice(0, charBudget) : text;
 }

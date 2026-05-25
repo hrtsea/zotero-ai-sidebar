@@ -104,7 +104,12 @@ describe("buildToc", () => {
     );
     const toc = buildToc(sections);
     expect(toc).toEqual([
-      { number: "1", level: 1, title: "One", bodyChars: sections[0].body.length },
+      {
+        number: "1",
+        level: 1,
+        title: "One",
+        bodyChars: sections[0].body.length,
+      },
       {
         number: "1.1",
         level: 2,
@@ -118,9 +123,7 @@ describe("buildToc", () => {
 
 describe("formatTocBlock", () => {
   it("renders an empty TOC as a placeholder line", () => {
-    expect(formatTocBlock([])).toBe(
-      "[arXiv paper — no detectable sections]",
-    );
+    expect(formatTocBlock([])).toBe("[arXiv paper — no detectable sections]");
     expect(isArxivTocBlock(formatTocBlock([]))).toBe(true);
   });
 
@@ -133,7 +136,8 @@ describe("formatTocBlock", () => {
     const out = formatTocBlock(toc);
     expect(out).toContain("[arXiv paper — section index]");
     expect(out).toContain("arxiv_get_section(section)");
-    expect(out).toContain("arxiv_get_figure(name)");
+    expect(out).toContain("arxiv_get_equation(number)");
+    expect(out).toContain("arxiv_get_figure(number/name)");
     expect(out).toContain("arxiv_get_bibliography()");
     expect(out).toContain("zotero_get_full_pdf()");
     expect(out).toContain("For whole-paper summaries/reviews");
@@ -144,18 +148,16 @@ describe("formatTocBlock", () => {
     expect(idxParent).toBeGreaterThan(0);
     expect(idxChild).toBeGreaterThan(idxParent);
     // Child indented more than parent.
-    expect(
-      out.slice(out.lastIndexOf("\n", idxChild) + 1, idxChild),
-    ).toMatch(/^ {4}/);
-    expect(
-      out.slice(out.lastIndexOf("\n", idxParent) + 1, idxParent),
-    ).toMatch(/^ {2}/);
+    expect(out.slice(out.lastIndexOf("\n", idxChild) + 1, idxChild)).toMatch(
+      /^ {4}/,
+    );
+    expect(out.slice(out.lastIndexOf("\n", idxParent) + 1, idxParent)).toMatch(
+      /^ {2}/,
+    );
   });
 
   it("is deterministic — same TOC produces byte-identical output", () => {
-    const toc = buildToc(
-      parseSections("\\section{A}\na\n\\section{B}\nb"),
-    );
+    const toc = buildToc(parseSections("\\section{A}\na\n\\section{B}\nb"));
     expect(formatTocBlock(toc)).toBe(formatTocBlock(toc));
   });
 });

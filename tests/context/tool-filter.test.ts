@@ -17,11 +17,15 @@ const tools = [
   tool("arxiv_list_sections"),
   tool("arxiv_get_section"),
   tool("arxiv_get_figure"),
+  tool("arxiv_get_equation"),
   tool("arxiv_get_bibliography"),
   tool("zotero_append_to_note"),
 ];
 
-function userMessage(content: string, context: Message["context"] = {}): Message {
+function userMessage(
+  content: string,
+  context: Message["context"] = {},
+): Message {
   return { role: "user", content, context };
 }
 
@@ -44,13 +48,17 @@ describe("toolsForPinnedFullTextTurn", () => {
     expect(result).toEqual([]);
   });
 
-  it("keeps only bibliography lookup for arXiv full-text turns", () => {
+  it("keeps deterministic arXiv lookups for arXiv full-text turns", () => {
     const result = toolsForPinnedFullTextTurn(
       tools,
       userMessage("总结这篇论文", { fullTextSource: "arxiv" }),
     );
 
-    expect(result.map((t) => t.name)).toEqual(["arxiv_get_bibliography"]);
+    expect(result.map((t) => t.name)).toEqual([
+      "arxiv_get_figure",
+      "arxiv_get_equation",
+      "arxiv_get_bibliography",
+    ]);
   });
 
   it("keeps write/export tools for explicit write requests", () => {
@@ -63,6 +71,7 @@ describe("toolsForPinnedFullTextTurn", () => {
       "arxiv_list_sections",
       "arxiv_get_section",
       "arxiv_get_figure",
+      "arxiv_get_equation",
       "arxiv_get_bibliography",
       "zotero_append_to_note",
     ]);

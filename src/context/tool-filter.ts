@@ -14,10 +14,16 @@ export function toolsForPinnedFullTextTurn(
   if (message.context?.fullTextSource === "arxiv_toc") return tools;
   if (!shouldKeepToolsWithPinnedFullText(message, options)) {
     // arXiv full-text front blocks intentionally omit expanded .bbl/.bib
-    // references, so keep the bibliography tool available on otherwise
-    // tool-free whole-paper turns.
+    // references, and PDF-visible equation numbers are compile-time metadata,
+    // so keep deterministic lookup tools available on otherwise tool-free
+    // whole-paper turns.
     if (message.context?.fullTextSource === "arxiv") {
-      return tools.filter((tool) => tool.name === "arxiv_get_bibliography");
+      return tools.filter(
+        (tool) =>
+          tool.name === "arxiv_get_bibliography" ||
+          tool.name === "arxiv_get_equation" ||
+          tool.name === "arxiv_get_figure",
+      );
     }
     return [];
   }

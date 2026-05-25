@@ -45,6 +45,12 @@ mode and run only in `yolo` mode. Read tools remain available without YOLO.
   boundaries.
 - `full_pdf`: attach current PDF full-text cache when the model explicitly
   requests whole-paper context through the tool loop.
+- `equation`: attach one numbered arXiv LaTeX equation resolved through the
+  local equation index, so requests like "公式 3" do not rely on nearby-section
+  guessing.
+- `figure`: attach one numbered arXiv figure resolved through the local figure
+  index, with a raster source image when available or a PDF Reader crop
+  fallback for vector figures.
 - `reader_pdf_text`: attach text from the active Zotero Reader/PDF.js text
   layer for PDF write workflows. Passages copied from this source can be
   located by `zotero_annotate_passage`.

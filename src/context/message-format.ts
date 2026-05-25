@@ -49,9 +49,9 @@ export function toApiMessages(
           )
         : message.role === "user" && message.context?.promptCacheWireContent
           ? message.context.promptCacheWireContent
-        : message.role === "user" && message.context?.promptCacheLedger
-          ? formatUserMessageWithPromptLedger(message)
-        : message.content,
+          : message.role === "user" && message.context?.promptCacheLedger
+            ? formatUserMessageWithPromptLedger(message)
+            : message.content,
     ...(message.images?.length ? { images: message.images } : {}),
   }));
 }
@@ -97,9 +97,11 @@ export function formatUserMessageForApi(
 function formatUserMessageWithPromptLedger(message: Message): string {
   const ledger = message.context?.promptCacheLedger;
   if (!ledger) return message.content;
-  return [...formatPromptLedgerBlock(ledger), "[User question]", message.content].join(
-    "\n",
-  );
+  return [
+    ...formatPromptLedgerBlock(ledger),
+    "[User question]",
+    message.content,
+  ].join("\n");
 }
 
 export function formatRetrievedPassages(passages: RetrievedPassage[]): string {
@@ -156,6 +158,12 @@ export function contextSummaryLine(message: Message): string {
   }
   if (context.planMode === "bibliography") {
     return `模型请求 arXiv 参考文献 ${context.bibliographyFiles?.length ?? 0} 个文件 / ${context.bibliographyChars ?? 0} 字`;
+  }
+  if (context.planMode === "equation") {
+    return `模型请求 arXiv 公式 (${context.equationNumber ?? "?"}) ${context.equationChars ?? 0} 字`;
+  }
+  if (context.planMode === "figure") {
+    return `模型请求 arXiv Figure ${context.figureNumber ?? "?"}${context.figureImageAttached ? "（含图像）" : "（仅文字）"}`;
   }
   if (context.fullTextChars) {
     const total = context.fullTextTotalChars;
@@ -272,10 +280,12 @@ export function formatContextLedger(messages: Message[]): string {
       `mode=${context.planMode ?? "unknown"}`,
     ];
     if (context.sourceKind) parts.push(`source_kind=${context.sourceKind}`);
-    if (context.sourceID) parts.push(`source_id=${JSON.stringify(context.sourceID)}`);
+    if (context.sourceID)
+      parts.push(`source_id=${JSON.stringify(context.sourceID)}`);
     if (context.sourceTitle)
       parts.push(`source_title=${JSON.stringify(context.sourceTitle)}`);
-    if (context.sourceUrl) parts.push(`source_url=${JSON.stringify(context.sourceUrl)}`);
+    if (context.sourceUrl)
+      parts.push(`source_url=${JSON.stringify(context.sourceUrl)}`);
     if (context.selectedText)
       parts.push(`selected_text_chars=${context.selectedText.length}`);
     if (context.fullTextChars) {
@@ -341,6 +351,27 @@ export function formatContextLedger(messages: Message[]): string {
         parts.push(
           `bibliography_files=${JSON.stringify(context.bibliographyFiles)}`,
         );
+      }
+    }
+    if (context.equationNumber) {
+      parts.push(`equation_number=${context.equationNumber}`);
+      if (context.equationLabel) {
+        parts.push(`equation_label=${JSON.stringify(context.equationLabel)}`);
+      }
+      if (context.equationChars) {
+        parts.push(`equation_chars=${context.equationChars}`);
+      }
+    }
+    if (context.figureNumber) {
+      parts.push(`figure_number=${context.figureNumber}`);
+      if (context.figureLabel) {
+        parts.push(`figure_label=${JSON.stringify(context.figureLabel)}`);
+      }
+      if (context.figureCaption) {
+        parts.push(`figure_caption=${JSON.stringify(context.figureCaption)}`);
+      }
+      if (context.figureImageAttached) {
+        parts.push("figure_image_attached=true");
       }
     }
     if (context.retainedContextCount) {

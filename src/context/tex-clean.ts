@@ -109,7 +109,11 @@ export function findNextCitationCommand(
 // neutral marker because reconstructing the compiled number requires TeX.
 export function normalizeLatexSourceCommands(
   text: string,
-  options: { preserveSectionLabels?: boolean } = {},
+  options: {
+    preserveSectionLabels?: boolean;
+    preserveEquationLabels?: boolean;
+    preserveFigureLabels?: boolean;
+  } = {},
 ): string {
   let out = "";
   let cursor = 0;
@@ -117,12 +121,9 @@ export function normalizeLatexSourceCommands(
     const parsed = findNextLatexSourceCommand(text, cursor);
     if (!parsed) return out + text.slice(cursor);
     out += text.slice(cursor, parsed.start);
-    out +=
-      options.preserveSectionLabels &&
-      parsed.command === "label" &&
-      isLikelySectionLabel(text, parsed.start)
-        ? text.slice(parsed.start, parsed.end)
-        : parsed.replacement;
+    out += shouldPreserveLatexLabel(text, parsed, options)
+      ? text.slice(parsed.start, parsed.end)
+      : parsed.replacement;
     cursor = parsed.end;
   }
   return out;
@@ -284,7 +285,10 @@ function expandMacroSegment(
     let changed = false;
     for (const [name, def] of defs) {
       if (name === skipName) continue;
-      const pattern = new RegExp(`\\\\${name}(?![A-Za-z])(?:\\\\(?=\\s))?`, "g");
+      const pattern = new RegExp(
+        `\\\\${name}(?![A-Za-z])(?:\\\\(?=\\s))?`,
+        "g",
+      );
       const next = result.replace(pattern, (match, offset: number) => {
         const replacement =
           def.mathText && isProbablyInMathMode(result, offset)
@@ -440,7 +444,9 @@ function parseLatexSourceCommandAt(
   if (SOURCE_ONLY_COMMANDS.has(command.name)) {
     if (text[i] !== "{") return null;
     const arg = readBalancedBraces(text, i);
-    return arg ? { end: arg.end, command: command.name, replacement: "" } : null;
+    return arg
+      ? { end: arg.end, command: command.name, replacement: "" }
+      : null;
   }
 
   if (REFERENCE_COMMANDS.has(command.name)) {
@@ -464,6 +470,59 @@ function isLikelySectionLabel(text: string, start: number): boolean {
   return /\\(?:section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{(?:[^{}]|\{[^{}]*\})*\}\s*$/.test(
     before,
   );
+}
+
+function shouldPreserveLatexLabel(
+  text: string,
+  parsed: { start: number; end: number; command: string; replacement: string },
+  options: {
+    preserveSectionLabels?: boolean;
+    preserveEquationLabels?: boolean;
+    preserveFigureLabels?: boolean;
+  },
+): boolean {
+  if (parsed.command !== "label") return false;
+  if (
+    options.preserveSectionLabels &&
+    isLikelySectionLabel(text, parsed.start)
+  ) {
+    return true;
+  }
+  return (
+    (options.preserveEquationLabels === true &&
+      isLikelyEquationLabel(text, parsed.start)) ||
+    (options.preserveFigureLabels === true &&
+      isLikelyFigureLabel(text, parsed.start))
+  );
+}
+
+function isLikelyEquationLabel(text: string, start: number): boolean {
+  const before = text.slice(Math.max(0, start - 5000), start);
+  const beginRe = /\\begin\{(equation|align|alignat|gather|multline)(\*)?\}/g;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = beginRe.exec(before)) !== null) last = match;
+  if (!last || last[2]) return false;
+  const env = last[1];
+  const lastBeginEnd = Math.max(0, start - 5000) + last.index + last[0].length;
+  const between = text.slice(lastBeginEnd, start);
+  if (new RegExp(`\\\\end\\{${env}\\*?\\}`).test(between)) return false;
+  return new RegExp(`\\\\end\\{${env}\\}`).test(
+    text.slice(start, start + 5000),
+  );
+}
+
+function isLikelyFigureLabel(text: string, start: number): boolean {
+  const before = text.slice(Math.max(0, start - 10000), start);
+  const beginRe = /\\begin\{figure\*?\}(?:\[[^\]]*\])?/g;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = beginRe.exec(before)) !== null) last = match;
+  if (!last) return false;
+  const lastBeginEnd = Math.max(0, start - 10000) + last.index + last[0].length;
+  const between = text.slice(lastBeginEnd, start);
+  if (/\\end\{figure\*?\}/.test(between)) return false;
+  return /\\end\{figure\*?\}/.test(text.slice(start, start + 10000));
 }
 
 function readListEnvironmentAt(
@@ -507,14 +566,16 @@ function findMatchingListEnvironmentEnd(
 function readListBoundaryAt(
   text: string,
   start: number,
-):
-  | { kind: "begin" | "end"; env: "enumerate" | "itemize"; end: number }
-  | null {
-  if (!text.startsWith("\\begin{", start) && !text.startsWith("\\end{", start)) {
+): { kind: "begin" | "end"; env: "enumerate" | "itemize"; end: number } | null {
+  if (
+    !text.startsWith("\\begin{", start) &&
+    !text.startsWith("\\end{", start)
+  ) {
     return null;
   }
   const kind = text.startsWith("\\begin{", start) ? "begin" : "end";
-  const nameStart = start + (kind === "begin" ? "\\begin{".length : "\\end{".length);
+  const nameStart =
+    start + (kind === "begin" ? "\\begin{".length : "\\end{".length);
   const nameEnd = text.indexOf("}", nameStart);
   if (nameEnd < 0) return null;
   const env = text.slice(nameStart, nameEnd);
@@ -563,7 +624,10 @@ function splitLatexListItems(
       items.push({ ...current, content: body.slice(current.start, i).trim() });
     }
     const parsed = readLatexItemAt(body, i);
-    current = { ...(parsed.label ? { label: parsed.label } : {}), start: parsed.end };
+    current = {
+      ...(parsed.label ? { label: parsed.label } : {}),
+      start: parsed.end,
+    };
     i = parsed.end - 1;
   }
   if (current) {
@@ -633,7 +697,8 @@ function latexTextCommandToMarkdown(command: LatexTextCommand): string {
   const content = normalizeLatexTextCommands(command.content);
   if (command.kind === "emphasis") return `*${content}*`;
   if (command.kind === "strong") return `**${content}**`;
-  if (command.kind === "code") return content.includes("`") ? content : `\`${content}\``;
+  if (command.kind === "code")
+    return content.includes("`") ? content : `\`${content}\``;
   return content;
 }
 

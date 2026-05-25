@@ -26,7 +26,10 @@ describe("findMainTex", () => {
   it("picks the file with documentclass + begin document", () => {
     const files = [
       { path: "sec1.tex", text: "\\section{Intro}" },
-      { path: "main.tex", text: "\\documentclass{x}\n\\begin{document}\nhi\n\\end{document}" },
+      {
+        path: "main.tex",
+        text: "\\documentclass{x}\n\\begin{document}\nhi\n\\end{document}",
+      },
     ];
     expect(findMainTex(files)?.path).toBe("main.tex");
   });
@@ -159,17 +162,50 @@ describe("normalizeLatexSourceCommands", () => {
 
   it("neutralizes cross-references without exposing source keys", () => {
     expect(
-      normalizeLatexSourceCommands("Figure~\\ref{fig:home} and Eq.~\\eqref{eq:loss}"),
+      normalizeLatexSourceCommands(
+        "Figure~\\ref{fig:home} and Eq.~\\eqref{eq:loss}",
+      ),
     ).toBe("Figure~[ref] and Eq.~[ref]");
   });
 
   it("can preserve section labels for arXiv section lookup", () => {
-    const text = "\\section{Method}\n\\label{sec:method}\nBody \\label{eq:body}";
+    const text =
+      "\\section{Method}\n\\label{sec:method}\nBody \\label{eq:body}";
     const out = normalizeLatexSourceCommands(text, {
       preserveSectionLabels: true,
     });
     expect(out).toContain("\\label{sec:method}");
     expect(out).not.toContain("eq:body");
+  });
+
+  it("can preserve equation labels for deterministic equation lookup", () => {
+    const text =
+      "\\begin{equation}\n" +
+      "x = y\n" +
+      "\\label{eq:target}\n" +
+      "\\end{equation}\n" +
+      "Body \\label{eq:body}";
+    const out = normalizeLatexSourceCommands(text, {
+      preserveEquationLabels: true,
+    });
+
+    expect(out).toContain("\\label{eq:target}");
+    expect(out).not.toContain("eq:body");
+  });
+
+  it("can preserve figure labels for deterministic figure lookup", () => {
+    const text =
+      "\\begin{figure}\n" +
+      "\\caption{A}\n" +
+      "\\label{fig:target}\n" +
+      "\\end{figure}\n" +
+      "Body \\label{fig:body}";
+    const out = normalizeLatexSourceCommands(text, {
+      preserveFigureLabels: true,
+    });
+
+    expect(out).toContain("\\label{fig:target}");
+    expect(out).not.toContain("fig:body");
   });
 });
 

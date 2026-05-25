@@ -260,7 +260,9 @@ describe("createZoteroAgentTools", () => {
       _internalReader: {
         _annotationManager: { _readOnly: false },
         setSelectedAnnotations() {
-          throw new Error("Permission denied to pass object to privileged code");
+          throw new Error(
+            "Permission denied to pass object to privileged code",
+          );
         },
       },
     };
@@ -523,6 +525,7 @@ describe("createZoteroAgentTools", () => {
       "arxiv_list_sections",
       "arxiv_get_figure",
       "arxiv_get_section",
+      "arxiv_get_equation",
       "arxiv_get_bibliography",
       "draw_article_mindmap",
       "paper_search_arxiv",
@@ -634,7 +637,10 @@ describe("createZoteroAgentTools", () => {
     await writeArxivSource(
       "BIBKEY01",
       [
-        { path: "main.tex", bytes: new TextEncoder().encode("\\bibliography{references}") },
+        {
+          path: "main.tex",
+          bytes: new TextEncoder().encode("\\bibliography{references}"),
+        },
         {
           path: "main.bbl",
           bytes: new TextEncoder().encode("\\bibitem{pi0} Pi zero paper."),
@@ -653,7 +659,9 @@ describe("createZoteroAgentTools", () => {
       },
     );
     const session = createZoteroAgentToolSession({ source, itemID: 1 });
-    const tool = session.tools.find((t) => t.name === "arxiv_get_bibliography")!;
+    const tool = session.tools.find(
+      (t) => t.name === "arxiv_get_bibliography",
+    )!;
 
     const result = await tool.execute({});
 
@@ -664,6 +672,169 @@ describe("createZoteroAgentTools", () => {
       planMode: "bibliography",
       bibliographyChars: result.output.length,
       bibliographyFiles: ["main.bbl"],
+    });
+  });
+
+  it("lets the model read a numbered arXiv equation deterministically", async () => {
+    const fs = new Map<string, string | Uint8Array>();
+    Object.defineProperty(globalThis, "IOUtils", {
+      configurable: true,
+      value: {
+        makeDirectory: async () => undefined,
+        writeUTF8: async (p: string, d: string) => void fs.set(p, d),
+        write: async (p: string, d: Uint8Array) => void fs.set(p, d),
+        readUTF8: async (p: string) => {
+          const value = fs.get(p);
+          if (value == null) throw new Error("missing file");
+          return typeof value === "string"
+            ? value
+            : new TextDecoder().decode(value);
+        },
+        read: async (p: string) => fs.get(p) as Uint8Array,
+        exists: async (p: string) => fs.has(p),
+      },
+    });
+    Object.defineProperty(globalThis, "Zotero", {
+      configurable: true,
+      value: {
+        ...(globalThis as any).Zotero,
+        Items: {
+          ...(globalThis as any).Zotero.Items,
+          get: () => ({ key: "EQKEY001" }),
+        },
+      },
+    });
+    await writeArxivSource(
+      "EQKEY001",
+      [
+        {
+          path: "main.tex",
+          bytes: new TextEncoder().encode(
+            [
+              "\\section{Method}",
+              "\\begin{equation}",
+              "a = b",
+              "\\label{eq:first}",
+              "\\end{equation}",
+              "\\paragraph{Mixed-pose training.}",
+              "The probability of using predicted poses follows a schedule:",
+              "[Equation (2) label=eq:mix_schedule]",
+              "\\begin{equation}",
+              "p_{\\text{pred}}(e) = p_{\\text{start}} + (p_{\\text{end}} - p_{\\text{start}})",
+              "\\label{eq:mix_schedule}",
+              "\\end{equation}",
+            ].join("\n"),
+          ),
+        },
+      ],
+      {
+        itemKey: "EQKEY001",
+        arxivId: "2604.28130",
+        fetchedAt: "2026-05-23T00:00:00.000Z",
+        mainTexRelPath: "main.tex",
+        status: "ok",
+      },
+    );
+    const session = createZoteroAgentToolSession({ source, itemID: 1 });
+    const tool = session.tools.find((t) => t.name === "arxiv_get_equation")!;
+
+    const result = await tool.execute({ number: 2 });
+
+    expect(result.output).toContain("[arXiv equation (2)]");
+    expect(result.output).toContain("Label: eq:mix_schedule");
+    expect(result.output).toContain("Display math for final answers");
+    expect(result.output).toContain("$$");
+    expect(result.output).toContain("p_{\\text{pred}}(e)");
+    expect(result.output).toContain("Exact LaTeX source for verification only");
+    expect(result.output).toContain("```tex");
+    expect(result.output).toContain("Mixed-pose training");
+    expect(result.context).toMatchObject({
+      planMode: "equation",
+      equationNumber: 2,
+      equationLabel: "eq:mix_schedule",
+    });
+
+    const section = session.tools.find((t) => t.name === "arxiv_get_section")!;
+    const sectionResult = await section.execute({ section: "Mixed-pose" });
+    expect(sectionResult.output).toContain(
+      "[Equation (2) label=eq:mix_schedule]",
+    );
+    expect(sectionResult.output).toContain("p_{\\text{pred}}(e)");
+  });
+
+  it("lets the model attach a numbered arXiv figure image", async () => {
+    const fs = new Map<string, string | Uint8Array>();
+    Object.defineProperty(globalThis, "IOUtils", {
+      configurable: true,
+      value: {
+        makeDirectory: async () => undefined,
+        writeUTF8: async (p: string, d: string) => void fs.set(p, d),
+        write: async (p: string, d: Uint8Array) => void fs.set(p, d),
+        readUTF8: async (p: string) => {
+          const value = fs.get(p);
+          if (value == null) throw new Error("missing file");
+          return typeof value === "string"
+            ? value
+            : new TextDecoder().decode(value);
+        },
+        read: async (p: string) => fs.get(p) as Uint8Array,
+        exists: async (p: string) => fs.has(p),
+      },
+    });
+    Object.defineProperty(globalThis, "Zotero", {
+      configurable: true,
+      value: {
+        ...(globalThis as any).Zotero,
+        Items: {
+          ...(globalThis as any).Zotero.Items,
+          get: () => ({ key: "FIGKEY01" }),
+        },
+      },
+    });
+    await writeArxivSource(
+      "FIGKEY01",
+      [
+        {
+          path: "main.tex",
+          bytes: new TextEncoder().encode(
+            [
+              "\\section{Results}",
+              "\\begin{figure}",
+              "\\includegraphics{figures/occupancy.png}",
+              "\\caption{The **occupancy trade-off** between 2D grids \\& 3D points.}",
+              "\\label{fig:occupancy}",
+              "\\end{figure}",
+            ].join("\n"),
+          ),
+        },
+        {
+          path: "figures/occupancy.png",
+          bytes: new Uint8Array([1, 2, 3, 4]),
+        },
+      ],
+      {
+        itemKey: "FIGKEY01",
+        arxivId: "2303.05367",
+        fetchedAt: "2026-05-23T00:00:00.000Z",
+        mainTexRelPath: "main.tex",
+        status: "ok",
+      },
+    );
+    const session = createZoteroAgentToolSession({ source, itemID: 1 });
+    const tool = session.tools.find((t) => t.name === "arxiv_get_figure")!;
+
+    const result = await tool.execute({ number: 1 });
+
+    expect(result.output).toContain("[arXiv figure 1]");
+    expect(result.output).toContain("Caption:");
+    expect(result.output).toContain("Image attached: yes");
+    expect(result.images).toHaveLength(1);
+    expect(result.images?.[0].mediaType).toBe("image/png");
+    expect(result.context).toMatchObject({
+      planMode: "figure",
+      figureNumber: 1,
+      figureLabel: "fig:occupancy",
+      figureImageAttached: true,
     });
   });
 

@@ -21,8 +21,10 @@ import {
   readArxivMeta,
   type ArxivMeta,
 } from "./arxiv-store";
+import { annotateNumberedEquations } from "./tex-equations";
+import { annotateNumberedFigures } from "./tex-figures";
 
-export const ARXIV_SOURCE_CLEANER_VERSION = 6;
+export const ARXIV_SOURCE_CLEANER_VERSION = 9;
 
 export function isFreshArxivSourceMeta(meta: ArxivMeta | null): boolean {
   return (
@@ -64,7 +66,10 @@ function writeArxivDebug(lines: string[]): void {
   try {
     const g = globalThis as unknown as {
       IOUtils?: { writeUTF8(p: string, d: string): Promise<unknown> };
-      Zotero?: { DataDirectory?: { dir?: string; path?: string }; Profile?: { dir: string } };
+      Zotero?: {
+        DataDirectory?: { dir?: string; path?: string };
+        Profile?: { dir: string };
+      };
     };
     const dir = g.Zotero?.DataDirectory?.dir ?? g.Zotero?.Profile?.dir;
     if (dir && g.IOUtils) {
@@ -86,7 +91,9 @@ export interface EnsureArxivArgs {
 
 // Returns true when a usable arXiv source cache exists for the item after
 // this call (already cached, or freshly downloaded). Never throws.
-export async function ensureArxivSource(args: EnsureArxivArgs): Promise<boolean> {
+export async function ensureArxivSource(
+  args: EnsureArxivArgs,
+): Promise<boolean> {
   const trace: string[] = [];
   const f = args.fields;
   trace.push(`ensureArxivSource itemKey=${args.itemKey}`);
@@ -144,7 +151,10 @@ export async function ensureArxivSource(args: EnsureArxivArgs): Promise<boolean>
     trace.push(`extractArchive -> ${files.length} files`);
     const texFiles: TexFile[] = files
       .filter((file) => /\.(tex|cls|sty|bbl)$/i.test(file.path))
-      .map((file) => ({ path: file.path, text: new TextDecoder().decode(file.bytes) }));
+      .map((file) => ({
+        path: file.path,
+        text: new TextDecoder().decode(file.bytes),
+      }));
     const main = findMainTex(texFiles);
     trace.push(
       `findMainTex -> ${main ? main.path : "NULL"} (texFiles=${texFiles.length}: ${texFiles
@@ -166,15 +176,25 @@ export async function ensureArxivSource(args: EnsureArxivArgs): Promise<boolean>
       return false;
     }
 
-    const cleaned = normalizeLatexSourceCommands(
-      normalizeCitations(
-        normalizeLatexTextCommands(
-          normalizeLatexListEnvironments(
-            stripTexComments(expandMacros(inlineInputs(main.text, texFiles))),
+    const cleaned = annotateNumberedFigures(
+      annotateNumberedEquations(
+        normalizeLatexSourceCommands(
+          normalizeCitations(
+            normalizeLatexTextCommands(
+              normalizeLatexListEnvironments(
+                stripTexComments(
+                  expandMacros(inlineInputs(main.text, texFiles)),
+                ),
+              ),
+            ),
           ),
+          {
+            preserveSectionLabels: true,
+            preserveEquationLabels: true,
+            preserveFigureLabels: true,
+          },
         ),
       ),
-      { preserveSectionLabels: true },
     );
     const meta: ArxivMeta = {
       itemKey: args.itemKey,
@@ -187,7 +207,10 @@ export async function ensureArxivSource(args: EnsureArxivArgs): Promise<boolean>
     // Store the raw archive files plus the cleaned main.tex (overwriting the
     // raw main entry) so readArxivMainText returns chat-ready text directly.
     const toStore = files.filter((file) => file.path !== main.path);
-    toStore.push({ path: "main.tex", bytes: new TextEncoder().encode(cleaned) });
+    toStore.push({
+      path: "main.tex",
+      bytes: new TextEncoder().encode(cleaned),
+    });
     await writeArxivSource(args.itemKey, toStore, meta);
     trace.push(`stored: ok (main.tex ${cleaned.length} chars) -> true`);
     args.onProgress?.("arXiv 源码就绪");

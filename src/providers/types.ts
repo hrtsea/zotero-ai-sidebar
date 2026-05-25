@@ -1,8 +1,8 @@
-import type { AgentPermissionMode, ModelPreset } from '../settings/types';
-import type { MessageContext } from '../context/types';
-import type { ToolSettings } from '../settings/tool-settings';
+import type { AgentPermissionMode, ModelPreset } from "../settings/types";
+import type { MessageContext } from "../context/types";
+import type { ToolSettings } from "../settings/tool-settings";
 
-export type MessageRole = 'user' | 'assistant';
+export type MessageRole = "user" | "assistant";
 
 export interface MindmapNode {
   id: string;
@@ -40,7 +40,11 @@ export interface MessageUsage {
   cacheRead?: number;
 }
 
-export type ChatTaskKind = 'general' | 'selection' | 'full_text' | 'reading_route';
+export type ChatTaskKind =
+  | "general"
+  | "selection"
+  | "full_text"
+  | "reading_route";
 
 export interface ChatTaskMeta {
   id: string;
@@ -77,10 +81,10 @@ export interface AssistantAnnotationDraft {
 }
 
 export type AssistantAnnotationDraftState =
-  | { kind: 'idle' }
-  | { kind: 'saving' }
-  | { kind: 'saved'; annotationID: number; savedAt: number }
-  | { kind: 'failed'; error: string };
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved"; annotationID: number; savedAt: number }
+  | { kind: "failed"; error: string };
 
 export interface MessageImage {
   id: string;
@@ -126,18 +130,19 @@ export interface ProviderStreamOptions {
 }
 
 export type StreamChunk =
-  | { type: 'status'; message: string }
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; text: string }
+  | { type: "status"; message: string }
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  | { type: "tool_images"; images: MessageImage[] }
   | {
-      type: 'tool_call';
+      type: "tool_call";
       name: string;
-      status: 'started' | 'completed' | 'error';
+      status: "started" | "completed" | "error";
       summary?: string;
       context?: MessageContext;
     }
-  | { type: 'usage'; input: number; output: number; cacheRead?: number }
-  | { type: 'error'; message: string };
+  | { type: "usage"; input: number; output: number; cacheRead?: number }
+  | { type: "error"; message: string };
 
 export interface Provider {
   stream(
