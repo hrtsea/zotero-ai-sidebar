@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { loadChatMessages, saveChatMessages } from '../../src/settings/chat-history';
+import { chatHistoryPath, loadChatMessages, saveChatMessages } from '../../src/settings/chat-history';
 
 let stored = '{}';
 
@@ -194,5 +194,46 @@ describe('chat history', () => {
         },
       },
     ]);
+  });
+
+  it('uses Windows separators for data-dir and old profile migration paths', async () => {
+    const newPath = 'C:\\Users\\admin\\Zotero\\zotero-ai-sidebar-chat-history.json';
+    const oldPath =
+      'C:\\Users\\admin\\AppData\\Roaming\\Zotero\\Zotero\\Profiles\\uerjpa0m.default\\zotero-ai-sidebar-chat-history.json';
+    const reads: string[] = [];
+    const writes: string[] = [];
+    Object.defineProperty(globalThis, 'Zotero', {
+      configurable: true,
+      value: {
+        DataDirectory: { dir: 'C:\\Users\\admin\\Zotero' },
+        Profile: {
+          dir: 'C:\\Users\\admin\\AppData\\Roaming\\Zotero\\Zotero\\Profiles\\uerjpa0m.default',
+        },
+        File: {
+          getContentsAsync: async (path: string) => {
+            reads.push(path);
+            if (path === oldPath) {
+              return JSON.stringify({
+                'item:42': {
+                  itemID: 42,
+                  updatedAt: '2026-05-27T00:00:00.000Z',
+                  messages: [{ role: 'user', content: 'old chat' }],
+                },
+              });
+            }
+            throw new Error(`missing file: ${path}`);
+          },
+          putContentsAsync: async (path: string, contents: string) => {
+            writes.push(path);
+            stored = contents;
+          },
+        },
+      },
+    });
+
+    expect(chatHistoryPath()).toBe(newPath);
+    expect(await loadChatMessages(42)).toEqual([{ role: 'user', content: 'old chat' }]);
+    expect(reads).toEqual([newPath, oldPath]);
+    expect(writes).toEqual([newPath]);
   });
 });

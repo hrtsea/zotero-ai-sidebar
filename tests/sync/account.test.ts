@@ -42,6 +42,8 @@ describe('sync account storage', () => {
       profileDir: '/home/alice/.zotero/zotero/x.default',
       lastPushAt: '2026-05-02T10:00:00Z',
       lastPullAt: '',
+      autoSyncEnabled: true,
+      lastAutoSyncAt: '2026-05-02T10:05:00Z',
     });
     expect(loadSyncAccount(prefs)).toEqual({
       webdavUrl: 'https://dav.example.com/dav/',
@@ -52,7 +54,14 @@ describe('sync account storage', () => {
       profileDir: '/home/alice/.zotero/zotero/x.default',
       lastPushAt: '2026-05-02T10:00:00Z',
       lastPullAt: '',
+      autoSyncEnabled: true,
+      lastAutoSyncAt: '2026-05-02T10:05:00Z',
     });
+  });
+
+  it('keeps automatic sync disabled by default', () => {
+    expect(normalizeSyncAccount({}).autoSyncEnabled).toBe(false);
+    expect(normalizeSyncAccount({ autoSyncEnabled: true }).autoSyncEnabled).toBe(true);
   });
 
   it('strips redundant slashes from the remote folder', () => {

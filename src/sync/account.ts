@@ -23,6 +23,8 @@ export interface SyncAccount {
   profileDir: string;
   lastPushAt: string;
   lastPullAt: string;
+  autoSyncEnabled: boolean;
+  lastAutoSyncAt: string;
 }
 
 export const DEFAULT_SYNC_ACCOUNT: SyncAccount = {
@@ -37,6 +39,8 @@ export const DEFAULT_SYNC_ACCOUNT: SyncAccount = {
   profileDir: '',
   lastPushAt: '',
   lastPullAt: '',
+  autoSyncEnabled: false,
+  lastAutoSyncAt: '',
 };
 
 const KEY = 'extensions.zotero-ai-sidebar.syncAccount';
@@ -75,6 +79,8 @@ export function normalizeSyncAccount(value: unknown): SyncAccount {
     profileDir: trimTo(input.profileDir, PATH_MAX),
     lastPushAt: trimTo(input.lastPushAt, 64),
     lastPullAt: trimTo(input.lastPullAt, 64),
+    autoSyncEnabled: input.autoSyncEnabled === true,
+    lastAutoSyncAt: trimTo(input.lastAutoSyncAt, 64),
   };
 }
 

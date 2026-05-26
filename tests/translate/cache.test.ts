@@ -51,6 +51,26 @@ describe('translate cache', () => {
     expect(got?.text).toBe('你好。');
   });
 
+  it('uses Windows separators when Zotero data directory is a Windows path', () => {
+    Object.defineProperty(globalThis, 'Zotero', {
+      configurable: true,
+      value: {
+        DataDirectory: { dir: 'C:\\Users\\admin\\Zotero' },
+        Profile: { dir: 'C:\\Users\\admin\\AppData\\Roaming\\Zotero\\Zotero\\Profiles\\uerjpa0m.default' },
+        File: {
+          getContentsAsync: async () => {
+            throw new Error('unused');
+          },
+          putContentsAsync: async () => undefined,
+        },
+      },
+    });
+
+    expect(translateCachePath()).toBe(
+      'C:\\Users\\admin\\Zotero\\zotero-ai-sidebar-translate-cache.json',
+    );
+  });
+
   it('caps cache to MAX entries (oldest evicted)', async () => {
     for (let i = 0; i < 510; i++) {
       await setCachedTranslation(`k${i}`, { text: `t${i}`, model: 'm', createdAt: i });

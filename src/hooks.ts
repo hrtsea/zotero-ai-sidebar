@@ -104,6 +104,7 @@ async function onStartup() {
 
   registerSidebar();
   await registerPreferences();
+  syncAutoSyncTimer();
 
   addon.data.initialized = true;
 }
@@ -122,6 +123,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  stopAutoSyncTimer();
   unregisterPreferences();
   ztoolkit.unregisterAll();
   unregisterSidebar();
@@ -305,6 +307,9 @@ function setupPreferencesPane(win: Window): void {
   byID<HTMLButtonElement>(doc, 'zai-sync-pull')?.addEventListener('click', () => {
     void runSyncPull(doc);
   });
+  byID<HTMLButtonElement>(doc, 'zai-sync-auto')?.addEventListener('click', () => {
+    void toggleAutoSync(doc);
+  });
 }
 
 async function runSyncTest(doc: Document): Promise<void> {
@@ -337,7 +342,7 @@ async function runSyncPull(doc: Document): Promise<void> {
   const account = readSyncAccountControls(doc);
   saveSyncAccount(zoteroPrefs(), account);
   const ok = doc.defaultView?.confirm(
-    '从云端下载会直接覆盖本地账号、显示、提示词、联网/MCP 和翻译配置。对话记录和翻译缓存不受影响。继续？',
+    '从云端下载会应用账号、显示、提示词、联网/MCP、翻译配置、AI 对话和翻译缓存。继续？',
   ) ?? true;
   if (!ok) {
     setStatus(doc, 'zai-sync-status', '已取消下载。');
@@ -355,6 +360,89 @@ async function runSyncPull(doc: Document): Promise<void> {
     renderSyncSettings(doc);
     refreshSidebarPreferences();
     flashButton(byID<HTMLButtonElement>(doc, 'zai-sync-pull'), '已下载');
+  }
+}
+
+const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
+let autoSyncInFlight = false;
+
+async function toggleAutoSync(doc: Document): Promise<void> {
+  const current = readSyncAccountControls(doc);
+  const next = {
+    ...current,
+    autoSyncEnabled: !current.autoSyncEnabled,
+  };
+  saveSyncAccount(zoteroPrefs(), next);
+  renderSyncSettings(doc);
+  syncAutoSyncTimer(false);
+  if (!next.autoSyncEnabled) {
+    setStatus(doc, 'zai-sync-status', '自动同步已关闭。');
+    flashButton(byID<HTMLButtonElement>(doc, 'zai-sync-auto'), '已关闭');
+    return;
+  }
+  setStatus(doc, 'zai-sync-status', '自动同步已开启，将先下载合并再上传。');
+  flashButton(byID<HTMLButtonElement>(doc, 'zai-sync-auto'), '已开启');
+  await runAutoSync(doc);
+}
+
+function syncAutoSyncTimer(startNow = true): void {
+  stopAutoSyncTimer();
+  const account = loadSyncAccount(zoteroPrefs());
+  if (!account.autoSyncEnabled) return;
+  autoSyncTimer = setInterval(() => {
+    void runAutoSync();
+  }, AUTO_SYNC_INTERVAL_MS);
+  if (startNow) void runAutoSync();
+}
+
+function stopAutoSyncTimer(): void {
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+}
+
+async function runAutoSync(doc?: Document): Promise<void> {
+  if (autoSyncInFlight) return;
+  let account = loadSyncAccount(zoteroPrefs());
+  if (!account.autoSyncEnabled) return;
+  if (!account.webdavUrl || !account.username || !account.password) return;
+
+  autoSyncInFlight = true;
+  try {
+    if (doc) setStatus(doc, 'zai-sync-status', '正在自动同步：从云端下载合并…');
+    const pull = await pullFromCloud(zoteroPrefs(), account);
+    if (!pull.ok && !pull.message.includes('云端尚未找到')) {
+      if (doc) setStatus(doc, 'zai-sync-status', `自动同步失败：${pull.message}`, true);
+      return;
+    }
+
+    account = loadSyncAccount(zoteroPrefs());
+    if (!account.autoSyncEnabled) return;
+    if (doc) setStatus(doc, 'zai-sync-status', '正在自动同步：上传合并后的状态…');
+    const push = await pushToCloud(zoteroPrefs(), account);
+    if (!push.ok) {
+      if (doc) setStatus(doc, 'zai-sync-status', `自动同步失败：${push.message}`, true);
+      return;
+    }
+
+    saveSyncAccount(zoteroPrefs(), {
+      ...loadSyncAccount(zoteroPrefs()),
+      lastAutoSyncAt: new Date().toISOString(),
+    });
+    refreshSidebarPreferences();
+    if (doc) {
+      renderPresetSettings(doc);
+      renderTranslateSettings(doc);
+      renderUiSettings(doc);
+      renderPromptSettings(doc);
+      renderToolSettings(doc);
+      renderSyncSettings(doc);
+      setStatus(doc, 'zai-sync-status', `自动同步完成。${push.message}`);
+    }
+  } finally {
+    autoSyncInFlight = false;
   }
 }
 
@@ -949,6 +1037,17 @@ function renderSyncSettings(doc: Document): void {
   setInputValue(doc, 'zai-sync-username', account.username);
   setInputValue(doc, 'zai-sync-password', account.password);
   setInputValue(doc, 'zai-sync-folder', account.remoteFolder);
+  const auto = byID<HTMLButtonElement>(doc, 'zai-sync-auto');
+  if (auto) {
+    auto.dataset.enabled = account.autoSyncEnabled ? 'true' : 'false';
+    auto.setAttribute('aria-pressed', account.autoSyncEnabled ? 'true' : 'false');
+    const label = auto.querySelector<HTMLElement>('.zai-switch-label');
+    if (label) label.textContent = account.autoSyncEnabled ? '开启' : '关闭';
+    else auto.textContent = account.autoSyncEnabled ? '开启' : '关闭';
+    auto.title = account.autoSyncEnabled
+      ? '已开启：启动时和每 10 分钟自动从云端下载合并，再上传到云端'
+      : '已关闭：点击后开启自动下载合并 + 上传';
+  }
   const meta = byID<HTMLElement>(doc, 'zai-sync-meta');
   if (meta) meta.textContent = formatSyncMeta(account);
 }
@@ -971,6 +1070,8 @@ function formatSyncMeta(account: SyncAccount): string {
   const parts: string[] = [];
   parts.push(account.lastPushAt ? `上次上传：${account.lastPushAt}` : '上次上传：未上传');
   parts.push(account.lastPullAt ? `上次下载：${account.lastPullAt}` : '上次下载：未下载');
+  parts.push(account.autoSyncEnabled ? '自动同步：开' : '自动同步：关');
+  if (account.lastAutoSyncAt) parts.push(`上次自动同步：${account.lastAutoSyncAt}`);
   return parts.join(' · ');
 }
 
@@ -1095,6 +1196,13 @@ function presetRow(doc: Document, preset: ModelPreset): HTMLElement {
     event.preventDefault();
     event.stopPropagation();
     card.remove();
+    // Mark form dirty so 保存账号配置 lights up.
+    updatePresetSaveButton(doc);
+    setStatus(
+      doc,
+      'zai-preset-status',
+      `已移除 ${preset.label || preset.provider} 卡片，保存后生效。`,
+    );
   });
   title.append(remove);
 

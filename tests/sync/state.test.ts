@@ -17,7 +17,12 @@ import { loadPresets } from '../../src/settings/storage';
 import { loadQuickPromptSettings } from '../../src/settings/quick-prompts';
 import { loadToolSettings } from '../../src/settings/tool-settings';
 import { loadUiSettings } from '../../src/settings/ui-settings';
-import { saveChatMessages } from '../../src/settings/chat-history';
+import { loadChatMessages, saveChatMessages } from '../../src/settings/chat-history';
+import {
+  getCachedTranslation,
+  setCachedTranslation,
+  translateCachePath,
+} from '../../src/translate/cache';
 
 function memPrefs(): PrefsStore {
   const map = new Map<string, string>();
@@ -27,18 +32,23 @@ function memPrefs(): PrefsStore {
   };
 }
 
-let storedThreads = '{}';
+let files: Map<string, string>;
 
 beforeEach(() => {
-  storedThreads = '{}';
+  files = new Map();
   Object.defineProperty(globalThis, 'Zotero', {
     configurable: true,
     value: {
+      DataDirectory: { dir: '/tmp/zotero-data' },
       Profile: { dir: '/tmp/zotero-profile' },
       File: {
-        getContentsAsync: async () => storedThreads,
+        getContentsAsync: async (path: string) => {
+          const value = files.get(path);
+          if (value == null) throw new Error(`missing file: ${path}`);
+          return value;
+        },
         putContentsAsync: async (_path: string, contents: string) => {
-          storedThreads = contents;
+          files.set(_path, contents);
         },
       },
       Items: {
@@ -76,7 +86,7 @@ beforeEach(() => {
 });
 
 describe('sync snapshot round trip', () => {
-  it('builds a snapshot with syncable settings and excludes local chat history', async () => {
+  it('builds a snapshot with syncable settings, chat history, and translate cache', async () => {
     const prefs = memPrefs();
     savePresets(prefs, [
       {
@@ -141,6 +151,11 @@ describe('sync snapshot round trip', () => {
       },
       { role: 'assistant', content: 'hi there' },
     ]);
+    await setCachedTranslation('translate-key', {
+      text: '你好。',
+      model: 'gpt-5.4',
+      createdAt: 1000,
+    });
 
     const snapshot = await buildSyncSnapshot(prefs);
     expect(snapshot.schema).toBe(SYNC_SCHEMA);
@@ -155,8 +170,10 @@ describe('sync snapshot round trip', () => {
     expect(snapshot.toolSettings.webSearchMode).toBe('live');
     expect(snapshot.toolSettings.textAnnotationFontSize).toBe(22);
     expect(snapshot.uiSettings.composerQueueWhileSending).toBe(true);
-    expect(snapshot).not.toHaveProperty('threads');
-    expect(JSON.stringify(snapshot)).not.toContain('hi there');
+    expect(snapshot.threads).toHaveLength(1);
+    expect(snapshot.threads?.[0].itemKey).toBe('AAAA1111');
+    expect(JSON.stringify(snapshot)).toContain('hi there');
+    expect(snapshot.translateCache?.entries['translate-key']?.text).toBe('你好。');
     expect(snapshot.annotations).toEqual([]);
   });
 
@@ -177,12 +194,13 @@ describe('sync snapshot round trip', () => {
     const snapshot = await buildSyncSnapshot(sourcePrefs);
     const json = JSON.stringify(snapshot);
 
-    storedThreads = '{}';
     const targetPrefs = memPrefs();
     const parsed = parseSyncSnapshot(json);
     const result = await applySyncSnapshot(targetPrefs, parsed);
 
     expect(result.annotations.imported).toBe(0);
+    expect(result.threads.imported).toBe(0);
+    expect(result.translateCache.imported).toBe(0);
     expect(loadUiSettings(targetPrefs).messageActionsPosition).toBe('top-right');
     expect(loadUiSettings(targetPrefs).chatFontFamily).toBe('LXGW WenKai, serif');
     expect(loadPresets(targetPrefs)).toEqual([]);
@@ -200,7 +218,70 @@ describe('sync snapshot round trip', () => {
     expect(() => parseSyncSnapshot('not json')).toThrow(/解析/);
   });
 
-  it('ignores legacy thread payloads because chat history is local-only', async () => {
+  it('imports portable chat threads by Zotero item key', async () => {
+    const json = JSON.stringify({
+      schema: SYNC_SCHEMA,
+      exportedAt: '2026-05-02T00:00:00Z',
+      presets: [],
+      uiSettings: {},
+      quickPrompts: {},
+      toolSettings: {},
+      threads: [
+        {
+          libraryType: 'user',
+          itemKey: 'AAAA1111',
+          updatedAt: '2026-05-02T00:00:00Z',
+          messages: [
+            { role: 'user', content: 'hello' },
+            { role: 'assistant', content: 'hi there' },
+          ],
+        },
+      ],
+    });
+    const prefs = memPrefs();
+    const result = await applySyncSnapshot(prefs, parseSyncSnapshot(json));
+    expect(result.annotations.imported).toBe(0);
+    expect(result.threads.imported).toBe(1);
+    expect(result.threads.unresolved).toBe(0);
+    expect((await loadChatMessages(42))[1]?.content).toBe('hi there');
+  });
+
+  it('merges cloud chat threads without deleting local-only messages', async () => {
+    await saveChatMessages(42, [
+      { role: 'user', content: 'local question' },
+      { role: 'assistant', content: 'local answer' },
+    ]);
+    const json = JSON.stringify({
+      schema: SYNC_SCHEMA,
+      exportedAt: '2026-05-02T00:00:00Z',
+      presets: [],
+      uiSettings: {},
+      quickPrompts: {},
+      toolSettings: {},
+      threads: [
+        {
+          libraryType: 'user',
+          itemKey: 'AAAA1111',
+          updatedAt: '2026-05-02T00:00:00Z',
+          messages: [
+            { role: 'user', content: 'cloud question' },
+            { role: 'assistant', content: 'cloud answer' },
+          ],
+        },
+      ],
+    });
+    const result = await applySyncSnapshot(memPrefs(), parseSyncSnapshot(json));
+    const messages = await loadChatMessages(42);
+    expect(result.threads.imported).toBe(1);
+    expect(messages.map((message) => message.content)).toEqual([
+      'local question',
+      'local answer',
+      'cloud question',
+      'cloud answer',
+    ]);
+  });
+
+  it('counts unresolved chat threads when the Zotero item is not local yet', async () => {
     const json = JSON.stringify({
       schema: SYNC_SCHEMA,
       exportedAt: '2026-05-02T00:00:00Z',
@@ -219,10 +300,11 @@ describe('sync snapshot round trip', () => {
     });
     const prefs = memPrefs();
     const result = await applySyncSnapshot(prefs, parseSyncSnapshot(json));
-    expect(result.annotations.imported).toBe(0);
+    expect(result.threads.imported).toBe(0);
+    expect(result.threads.unresolved).toBe(1);
   });
 
-  it('round-trips translateSettings and excludes local translateCache', async () => {
+  it('round-trips translateSettings and translateCache', async () => {
     const prefs = memPrefs();
     saveTranslateSettings(prefs, {
       ...DEFAULT_TRANSLATE_SETTINGS,
@@ -237,6 +319,11 @@ describe('sync snapshot round trip', () => {
       nextSentenceKey: 'Alt+N',
       prevSentenceKey: 'Alt+P',
     });
+    await setCachedTranslation('cache-key', {
+      text: '缓存译文',
+      model: 'gpt-5.4',
+      createdAt: 2000,
+    });
     const snap = await buildSyncSnapshot(prefs);
     const json = JSON.stringify(snap);
     const reparsed = parseSyncSnapshot(json);
@@ -249,9 +336,10 @@ describe('sync snapshot round trip', () => {
     expect(reparsed.translateSettings?.triggerMode).toBe('double');
     expect(reparsed.translateSettings?.nextSentenceKey).toBe('Alt+N');
     expect(reparsed.translateSettings?.prevSentenceKey).toBe('Alt+P');
-    expect(reparsed).not.toHaveProperty('translateCache');
+    expect(reparsed.translateCache?.entries['cache-key']?.text).toBe('缓存译文');
 
     const targetPrefs = memPrefs();
+    files = new Map();
     await applySyncSnapshot(targetPrefs, reparsed);
     const pulled = loadTranslateSettings(targetPrefs);
     expect(pulled.presetId).toBe('gpt-preset');
@@ -263,6 +351,8 @@ describe('sync snapshot round trip', () => {
     expect(pulled.triggerMode).toBe('double');
     expect(pulled.nextSentenceKey).toBe('Alt+N');
     expect(pulled.prevSentenceKey).toBe('Alt+P');
+    expect((await getCachedTranslation('cache-key'))?.text).toBe('缓存译文');
+    expect(files.has(translateCachePath())).toBe(true);
   });
 
   it('accepts snapshots missing translate fields (back-compat)', () => {
@@ -273,11 +363,11 @@ describe('sync snapshot round trip', () => {
       uiSettings: {},
       quickPrompts: {},
       toolSettings: {},
-      threads: [],
       annotations: [],
     });
     const snap = parseSyncSnapshot(json);
     expect(snap.translateSettings).toBeUndefined();
-    expect(snap).not.toHaveProperty('translateCache');
+    expect(snap.threads).toEqual([]);
+    expect(snap.translateCache?.entries).toEqual({});
   });
 });

@@ -195,11 +195,13 @@ Use case: keep chat history, prompt library, and UI settings consistent between 
 1. In settings, fill in WebDAV endpoint (URL, user, password). Nutstore, self-hosted Nextcloud, anything WebDAV-compatible works.
 2. **Push** packages this machine's state into a single `state.json` and uploads it.
 3. **Pull** downloads `state.json` and overwrites local state.
+4. **Auto sync** is off by default; when enabled, startup and every 10 minutes run download-and-merge, then upload.
 
 What `state.json` contains:
 
 - ✅ Chat threads (per-paper conversations, thinking, tool traces, image metadata)
 - ✅ Quick prompts, UI settings, the non-secret fields of model presets, tool/MCP settings
+- ✅ Sentence-translation cache (cached translations for already translated sentences)
 - ✅ Annotations on selected papers (carried by *portable thread keys* so threads survive itemID changes)
 - ❌ **API keys are not uploaded** (kept in local prefs)
 - ❌ **PDF files are not uploaded** (those go through Zotero File Sync on a separate WebDAV path)

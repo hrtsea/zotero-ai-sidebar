@@ -34,14 +34,28 @@ import {
   saveUiSettings,
   type UiSettings,
 } from '../settings/ui-settings';
+import {
+  exportAllThreads,
+  importAllThreads,
+  type ImportThreadsResult,
+  type PortableThread,
+} from '../settings/chat-history';
+import {
+  exportTranslateCache,
+  importTranslateCache,
+  normalizeTranslateCache,
+  type ImportTranslateCacheResult,
+  type TranslateCacheSnapshot,
+} from '../translate/cache';
 
 // Sync snapshot: the on-the-wire JSON we push to / pull from the cloud.
 //
 // `schema` is required so a future format break can be detected and rejected
 // with a clear error instead of silently mis-merging.
 //
-// Chat history and translate cache are NOT included — they are stored locally
-// in ~/Zotero/ alongside PDFs and are not synced to the cloud.
+// Chat history uses portable Zotero item keys on the wire because local
+// numeric itemIDs differ across machines. Translation cache keys are already
+// deterministic hashes of the sentence + translation settings.
 
 export const SYNC_SCHEMA = 'zotero-ai-sidebar.sync.v1';
 
@@ -58,14 +72,24 @@ export interface SyncSnapshot {
   annotations: PortableAnnotation[];
   // Added v1.1 (still under SYNC_SCHEMA v1 — optional on the wire).
   translateSettings?: TranslateSettings;
+  // Added later under the same v1 envelope; optional on the wire for old
+  // payloads that were uploaded before chat/cache sync existed.
+  threads?: PortableThread[];
+  translateCache?: TranslateCacheSnapshot;
 }
 
 export interface ApplySnapshotResult {
   annotations: ImportAnnotationsResult;
+  threads: ImportThreadsResult;
+  translateCache: ImportTranslateCacheResult;
 }
 
 export async function buildSyncSnapshot(prefs: PrefsStore): Promise<SyncSnapshot> {
-  const annotations = await exportAllAnnotations();
+  const [annotations, threads, translateCache] = await Promise.all([
+    exportAllAnnotations(),
+    exportAllThreads(),
+    exportTranslateCache(),
+  ]);
   return {
     schema: SYNC_SCHEMA,
     exportedAt: new Date().toISOString(),
@@ -75,6 +99,8 @@ export async function buildSyncSnapshot(prefs: PrefsStore): Promise<SyncSnapshot
     toolSettings: loadToolSettings(prefs),
     annotations,
     translateSettings: loadTranslateSettings(prefs),
+    threads,
+    translateCache,
   };
 }
 
@@ -104,6 +130,8 @@ export function parseSyncSnapshot(raw: string): SyncSnapshot {
     translateSettings: parsed.translateSettings === undefined
       ? undefined
       : normalizeTranslateSettings(parsed.translateSettings),
+    threads: normalizePortableThreads(parsed.threads),
+    translateCache: normalizeTranslateCache(parsed.translateCache),
   };
 }
 
@@ -116,8 +144,58 @@ export async function applySyncSnapshot(
   saveQuickPromptSettings(prefs, snapshot.quickPrompts);
   saveToolSettings(prefs, snapshot.toolSettings);
   if (snapshot.translateSettings) saveTranslateSettings(prefs, snapshot.translateSettings);
-  const annotations = await importAllAnnotations(snapshot.annotations);
-  return { annotations };
+  const [annotations, threads, translateCache] = await Promise.all([
+    importAllAnnotations(snapshot.annotations),
+    importAllThreads(snapshot.threads ?? []),
+    importTranslateCache(snapshot.translateCache),
+  ]);
+  return { annotations, threads, translateCache };
+}
+
+function normalizePortableThreads(value: unknown): PortableThread[] {
+  const threads: PortableThread[] = [];
+  if (!Array.isArray(value)) return [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const libraryType =
+      entry.libraryType === 'user' ||
+      entry.libraryType === 'group' ||
+      entry.libraryType === 'global'
+        ? entry.libraryType
+        : null;
+    if (!libraryType) continue;
+    const updatedAt = typeof entry.updatedAt === 'string' ? entry.updatedAt : '';
+    const messages = Array.isArray(entry.messages) ? entry.messages : [];
+    if (!updatedAt || messages.length === 0) continue;
+    if (libraryType === 'global') {
+      threads.push({
+        libraryType,
+        updatedAt,
+        messages: messages as PortableThread['messages'],
+      });
+      continue;
+    }
+    const itemKey = typeof entry.itemKey === 'string' ? entry.itemKey : '';
+    if (!itemKey) continue;
+    if (libraryType === 'group') {
+      if (typeof entry.groupID !== 'number') continue;
+      threads.push({
+        libraryType,
+        groupID: entry.groupID,
+        itemKey,
+        updatedAt,
+        messages: messages as PortableThread['messages'],
+      });
+      continue;
+    }
+    threads.push({
+      libraryType,
+      itemKey,
+      updatedAt,
+      messages: messages as PortableThread['messages'],
+    });
+  }
+  return threads;
 }
 
 function normalizePortableAnnotations(value: unknown): PortableAnnotation[] {

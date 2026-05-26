@@ -10,6 +10,16 @@ interface CacheState {
   entries: Record<string, CacheEntry>;
 }
 
+export interface TranslateCacheSnapshot {
+  entries: Record<string, CacheEntry>;
+}
+
+export interface ImportTranslateCacheResult {
+  imported: number;
+  unchanged: number;
+  skipped: number;
+}
+
 interface CacheKeyInput {
   sentence: string;
   target: string;
@@ -70,25 +80,19 @@ function getZotero(): ZoteroGlobal {
 export function translateCachePath(): string {
   const Z = getZotero();
   const dir = Z.DataDirectory?.dir ?? Z.DataDirectory?.path ?? Z.Profile.dir;
-  return `${dir}/${CACHE_FILE}`;
+  return appendLocalFile(dir, CACHE_FILE);
+}
+
+function appendLocalFile(dir: string, file: string): string {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  const base = dir.replace(/[\\/]+$/g, '');
+  return base ? `${base}${sep}${file}` : `${sep}${file}`;
 }
 
 async function readCache(): Promise<CacheState> {
   try {
     const raw = await getZotero().File.getContentsAsync(translateCachePath(), 'utf-8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return { entries: {} };
-    const entries = (parsed as { entries?: Record<string, unknown> }).entries;
-    if (!entries || typeof entries !== 'object') return { entries: {} };
-    const out: Record<string, CacheEntry> = {};
-    for (const [k, v] of Object.entries(entries)) {
-      if (!v || typeof v !== 'object') continue;
-      const e = v as Partial<CacheEntry>;
-      if (typeof e.text === 'string' && typeof e.model === 'string' && typeof e.createdAt === 'number') {
-        out[k] = { text: e.text, model: e.model, createdAt: e.createdAt };
-      }
-    }
-    return { entries: out };
+    return normalizeTranslateCache(JSON.parse(raw));
   } catch {
     return { entries: {} };
   }
@@ -119,4 +123,69 @@ export function setCachedTranslation(key: string, entry: CacheEntry): Promise<vo
     await writeCache(state);
   });
   return writeQueue;
+}
+
+export async function exportTranslateCache(): Promise<TranslateCacheSnapshot> {
+  return readCache();
+}
+
+export function importTranslateCache(
+  snapshot: TranslateCacheSnapshot | undefined,
+): Promise<ImportTranslateCacheResult> {
+  let outcome: ImportTranslateCacheResult = {
+    imported: 0,
+    unchanged: 0,
+    skipped: 0,
+  };
+  writeQueue = writeQueue.catch(() => undefined).then(async () => {
+    const incoming = normalizeTranslateCache(snapshot);
+    const state = await readCache();
+    let imported = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    for (const [key, entry] of Object.entries(incoming.entries)) {
+      const existing = state.entries[key];
+      if (existing && existing.createdAt >= entry.createdAt) {
+        unchanged += 1;
+        continue;
+      }
+      if (!key) {
+        skipped += 1;
+        continue;
+      }
+      state.entries[key] = entry;
+      imported += 1;
+    }
+    await writeCache(state);
+    outcome = { imported, unchanged, skipped };
+  });
+  return writeQueue.then(() => outcome);
+}
+
+export function normalizeTranslateCache(value: unknown): TranslateCacheSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { entries: {} };
+  }
+  const entries = (value as { entries?: Record<string, unknown> }).entries;
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+    return { entries: {} };
+  }
+  const out: Record<string, CacheEntry> = {};
+  for (const [key, raw] of Object.entries(entries)) {
+    if (!key || !raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Partial<CacheEntry>;
+    if (
+      typeof entry.text === 'string' &&
+      typeof entry.model === 'string' &&
+      typeof entry.createdAt === 'number' &&
+      Number.isFinite(entry.createdAt)
+    ) {
+      out[key] = {
+        text: entry.text,
+        model: entry.model,
+        createdAt: entry.createdAt,
+      };
+    }
+  }
+  return { entries: out };
 }

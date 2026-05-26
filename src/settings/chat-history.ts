@@ -142,7 +142,13 @@ export function saveChatMessages(itemID: number | null, messages: Message[]): Pr
 }
 
 export function chatHistoryPath(): string {
-  return `${historyDir()}/${HISTORY_FILE}`;
+  return appendLocalFile(historyDir(), HISTORY_FILE);
+}
+
+function appendLocalFile(dir: string, file: string): string {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  const base = dir.replace(/[\\/]+$/g, '');
+  return base ? `${base}${sep}${file}` : `${sep}${file}`;
 }
 
 async function readThreads(): Promise<StoredThreads> {
@@ -151,7 +157,7 @@ async function readThreads(): Promise<StoredThreads> {
   // location if the new one is absent. Migration is one-time: we write the
   // file to the new path and leave the old copy in place as a backup.
   const newPath = chatHistoryPath();
-  const oldPath = `${Z.Profile.dir}/${HISTORY_FILE}`;
+  const oldPath = appendLocalFile(Z.Profile.dir, HISTORY_FILE);
   for (const path of [newPath, oldPath]) {
     try {
       const raw = await Z.File.getContentsAsync(path, 'utf-8');
@@ -371,7 +377,7 @@ export async function exportAllThreads(): Promise<PortableThread[]> {
       result.push({
         libraryType: 'global',
         updatedAt: thread.updatedAt,
-        messages: thread.messages,
+        messages: normalizeMessages(thread.messages),
       });
       continue;
     }
@@ -380,7 +386,7 @@ export async function exportAllThreads(): Promise<PortableThread[]> {
     result.push({
       ...portable,
       updatedAt: thread.updatedAt,
-      messages: thread.messages,
+      messages: normalizeMessages(thread.messages),
     });
   }
   return result;
@@ -405,17 +411,20 @@ export function importAllThreads(
       const safeMessages = normalizeMessages(candidate.messages);
       if (safeMessages.length === 0) continue;
       const existingThread = existing[localKey];
-      // Last-write-wins by updatedAt: only overwrite when the cloud copy is
-      // strictly newer. Equal timestamps treated as "no change" to avoid
-      // gratuitous updates.
-      if (existingThread && existingThread.updatedAt >= candidate.updatedAt) {
+      const existingMessages = normalizeMessages(existingThread?.messages);
+      const mergedMessages = mergeMessages(existingMessages, safeMessages);
+      if (existingThread && mergedMessages.length === existingMessages.length) {
+        existingThread.updatedAt = maxIso(existingThread.updatedAt, candidate.updatedAt);
+        existingThread.messages = existingMessages;
         unchanged += 1;
         continue;
       }
       existing[localKey] = {
-        itemID: candidate.libraryType === 'global' ? null : itemIDForKey(localKey),
-        updatedAt: candidate.updatedAt,
-        messages: safeMessages,
+        itemID:
+          existingThread?.itemID ??
+          (candidate.libraryType === 'global' ? null : itemIDForKey(localKey)),
+        updatedAt: maxIso(existingThread?.updatedAt, candidate.updatedAt),
+        messages: mergedMessages,
       };
       imported += 1;
     }
@@ -423,6 +432,26 @@ export function importAllThreads(
     outcome = { imported, unchanged, unresolved };
   });
   return writeQueue.then(() => outcome);
+}
+
+function mergeMessages(local: Message[], incoming: Message[]): Message[] {
+  const seen = new Set(local.map(messageSignature));
+  const merged = [...local];
+  for (const message of incoming) {
+    const signature = messageSignature(message);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    merged.push(message);
+  }
+  return merged;
+}
+
+function messageSignature(message: Message): string {
+  return JSON.stringify(message);
+}
+
+function maxIso(a: string | undefined, b: string): string {
+  return a && a >= b ? a : b;
 }
 
 function portableFromItemID(itemID: number): Omit<PortableThread, 'updatedAt' | 'messages'> | null {
